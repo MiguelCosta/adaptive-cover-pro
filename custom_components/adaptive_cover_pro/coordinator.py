@@ -61,7 +61,6 @@ from .helpers import (
     custom_position_slot_delivers_fixed_position,
     custom_position_slot_name,
     custom_position_slot_sensors,
-    has_configured_window_end,
     read_sun_boundaries,
     read_sunset_window_open,
     resolve_override_deadline,
@@ -101,12 +100,8 @@ from .const import (
     CONF_INVERSE_STATE,
     CONF_INVERSE_TILT,
     CONF_IRRADIANCE_ENTITY,
-    CONF_MANUAL_IGNORE_EXTERNAL,
     CONF_MANUAL_IGNORE_INTERMEDIATE,
-    CONF_MANUAL_OVERRIDE_DURATION,
-    CONF_MANUAL_OVERRIDE_RESET,
     CONF_MANUAL_OVERRIDE_STRATEGY,
-    CONF_MANUAL_THRESHOLD,
     CONF_MY_POSITION_VALUE,
     CONF_OPEN_CLOSE_THRESHOLD,
     CONF_RETURN_SUNSET,
@@ -147,6 +142,7 @@ from .diagnostics.event_buffer import EventBuffer
 from .managers.cover_command import (
     CoverCommandService,
     PositionContext,
+    build_limit_positions,
     build_special_positions,
 )
 from .managers.cover_command.queue import (
@@ -156,9 +152,9 @@ from .managers.cover_command.queue import (
 )
 from .managers.grace_period import GracePeriodManager
 from .managers.manual_override import (
-    STARTED_AT_SOURCE_ENGAGED,
     AdaptiveCoverManager,
     DetectorConfig,
+    StateChangeInputs,
     get_detector,
 )
 from .managers.climate_smoothing import ClimateSmoothingManager
@@ -402,15 +398,15 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         self._sun_start_time = None
         self._sun_start_position: dict[str, float] | None = None
         self._sun_end_position: dict[str, float] | None = None
-        self.manual_reset = self.config_entry.options.get(
-            CONF_MANUAL_OVERRIDE_RESET, False
-        )
-        self.manual_duration = self.config_entry.options.get(
-            CONF_MANUAL_OVERRIDE_DURATION
-        ) or {"hours": 2}
-        self.manual_ignore_external = self.config_entry.options.get(
-            CONF_MANUAL_IGNORE_EXTERNAL, False
-        )
+        # Built once here and reused for every seeded option below: the
+        # manual-override mirrors, the detector config, the command-service
+        # construction (position_tolerance) and the late policy.attach. Each
+        # default is then declared once — in config_types — instead of being
+        # restated at every read site.
+        rc = RuntimeConfig.from_options(self.config_entry.options)
+        self.manual_reset = rc.manual_override.reset
+        self.manual_duration = rc.manual_override.duration
+        self.manual_ignore_external = rc.manual_override.ignore_external
         self.state_change = False
         self.cover_state_change = False
         self.first_refresh = False
@@ -484,7 +480,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             detector=get_detector(
                 self.config_entry.options.get(CONF_MANUAL_OVERRIDE_STRATEGY)
                 or DEFAULT_MANUAL_OVERRIDE_STRATEGY,
-                self._make_detector_config(self.config_entry.options),
+                self._make_detector_config(self.config_entry.options, rc),
             ),
         )
         # Populate the manager's cover set at construction so the manual-override
@@ -720,26 +716,21 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # again instead of it staying silenced from the first occurrence.
         self._irradiance_unit_warned: tuple[str | None, str | None] | None = None
 
-        # Built once and reused for both the command-service construction
-        # (position_tolerance) and the late policy.attach below.
-        _rc_attach = RuntimeConfig.from_options(self.config_entry.options)
         # Seeded here so the live lambda passed to policy.attach reads a value
         # before the first _update_options cycle; refreshed each cycle (#679).
-        self._enforce_delta_at_endpoints = (
-            _rc_attach.tracking.enforce_delta_at_endpoints
-        )
+        self._enforce_delta_at_endpoints = rc.tracking.enforce_delta_at_endpoints
         # Seeded here so the live drift-reset lambda passed to policy.attach
         # reads a value before the first _update_options cycle; refreshed each
         # cycle (issue #663).
-        self._venetian_tilt_reset_threshold = _rc_attach.venetian.tilt_reset_threshold
+        self._venetian_tilt_reset_threshold = rc.venetian.tilt_reset_threshold
         # Seeded alongside the threshold so the live drift-reset direction lambda
         # passed to policy.attach reads a value before the first _update_options
         # cycle; refreshed each cycle (issue #686).
-        self._venetian_tilt_reset_direction = _rc_attach.venetian.tilt_reset_direction
+        self._venetian_tilt_reset_direction = rc.venetian.tilt_reset_direction
         # Seeded alongside the threshold so the live drift-reset scope lambda
         # passed to policy.attach reads a value before the first _update_options
         # cycle; refreshed each cycle (issue #808).
-        self._venetian_tilt_reset_scope = _rc_attach.venetian.tilt_reset_scope
+        self._venetian_tilt_reset_scope = rc.venetian.tilt_reset_scope
         # Seeded so the end-time sensor and the reboot-restore path — both of
         # which can reach expiry_for() before the first _update_options cycle —
         # read a real mode rather than raising AttributeError; refreshed each
@@ -748,7 +739,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # CONF_MANUAL_OVERRIDE_DURATION_MODE from options. The config/options
         # flow, the field schema and the service validator still read the raw
         # key — correctly, since none of them has a coordinator to read from.
-        self.manual_override_duration_mode = _rc_attach.manual_override.duration_mode
+        self.manual_override_duration_mode = rc.manual_override.duration_mode
 
         # Named dispatch queue (issue #1189). Resolved once, at setup: the queue
         # is cross-entry shared state, so it is looked up in the hass.data
@@ -757,7 +748,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # assignment full-reloads the entry — it is setup wiring (this
         # constructor argument, this refcount), not a value the running
         # coordinator can re-read.
-        _queue_name = normalize_queue_name(_rc_attach.tracking.command_queue)
+        _queue_name = normalize_queue_name(rc.tracking.command_queue)
         if _queue_name:
             self._command_queue = get_command_queue(self.hass, _queue_name)
             self._command_queue.attach()
@@ -781,8 +772,8 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             open_close_threshold=self.config_entry.options.get(
                 CONF_OPEN_CLOSE_THRESHOLD, 50
             ),
-            endpoint_use_open_close=_rc_attach.tracking.endpoint_use_open_close,
-            position_tolerance=_rc_attach.tracking.position_tolerance,
+            endpoint_use_open_close=rc.tracking.endpoint_use_open_close,
+            position_tolerance=rc.tracking.position_tolerance,
             transit_timeout_seconds=self.config_entry.options.get(CONF_TRANSIT_TIMEOUT)
             or DEFAULT_TRANSIT_TIMEOUT_SECONDS,
             on_tick=self._check_time_window_transition,
@@ -894,15 +885,13 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
                 self.hass, eid, "current_tilt_position"
             ),
             event_buffer=self._event_buffer,
-            tilt_skip_above=_rc_attach.venetian.tilt_skip_above,
-            venetian_tilt_skip_mode=_rc_attach.venetian.tilt_skip_mode,
-            venetian_mode=_rc_attach.venetian.venetian_mode,
-            venetian_tilt_only_scope=_rc_attach.venetian.tilt_only_scope,
-            post_settle_hold_seconds=_rc_attach.venetian.post_settle_hold_seconds,
-            post_settle_mode=_rc_attach.venetian.post_settle_mode,
-            backrotate_publish_lag_seconds=(
-                _rc_attach.venetian.backrotate_publish_lag_seconds
-            ),
+            tilt_skip_above=rc.venetian.tilt_skip_above,
+            venetian_tilt_skip_mode=rc.venetian.tilt_skip_mode,
+            venetian_mode=rc.venetian.venetian_mode,
+            venetian_tilt_only_scope=rc.venetian.tilt_only_scope,
+            post_settle_hold_seconds=rc.venetian.post_settle_hold_seconds,
+            post_settle_mode=rc.venetian.post_settle_mode,
+            backrotate_publish_lag_seconds=rc.venetian.backrotate_publish_lag_seconds,
             # Lets a dual-axis policy report its own tilt frames to this
             # instance's command queue (issue #1189). The settle+tilt tail runs
             # outside the queue slot by design, so without this the queue would
@@ -993,6 +982,15 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         self._custom_position_hold_unsub: Callable[[], None] | None = None
         self._sun_tracking_gate_unsub: Callable[[], None] | None = None
 
+        # Issue #175: cancel handle for the single ``async_call_later`` wake
+        # that re-runs the update cycle the moment a cloud-suppression hold
+        # outlives its escalation delay. Its OWN handle, deliberately not
+        # ``_refresh_after_unsub``: that one is a single slot already owned by
+        # venetian back-rotate suppression (#756) and cancelled
+        # unconditionally, so sharing it would have the two wakes silently
+        # cancelling each other.
+        self._cloud_escalation_unsub: Callable[[], None] | None = None
+
         # Issue #1138 (re-keyed for #1156 / #1144 item 2): in-flight
         # external-command interlock corrections, keyed by the UNORDERED PAIR
         # of entities the correction moves — not by whichever one's command is
@@ -1003,20 +1001,18 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # cancelled on shutdown so nothing is left pending after an unload.
         self._external_interlock_tasks: dict[frozenset[str], asyncio.Task] = {}
 
-    def _make_detector_config(self, options) -> DetectorConfig:
-        """Build the manual-override DetectorConfig from raw options.
+    def _make_detector_config(self, options, rc: RuntimeConfig) -> DetectorConfig:
+        """Build the DetectorConfig for the engine and active detector.
 
-        Single source of truth shared by manager construction and
-        ``update_config`` so the detector and the engine never drift.
+        ``duration`` comes from the already-built RuntimeConfig slice so the hold
+        default is declared once (config_types); ``command_window_seconds`` still
+        reads CONF_TRANSIT_TIMEOUT directly because no slice tracks it.
         """
         return DetectorConfig(
-            manual_threshold=options.get(CONF_MANUAL_THRESHOLD),
             command_window_seconds=float(
                 options.get(CONF_TRANSIT_TIMEOUT) or DEFAULT_TRANSIT_TIMEOUT_SECONDS
             ),
-            reset=options.get(CONF_MANUAL_OVERRIDE_RESET, False),
-            duration=options.get(CONF_MANUAL_OVERRIDE_DURATION) or {"hours": 2},
-            ignore_external=options.get(CONF_MANUAL_IGNORE_EXTERNAL, False),
+            duration=rc.manual_override.duration,
         )
 
     # --- Property delegates for CoverCommandService state ---
@@ -2559,6 +2555,10 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             motion_timeout_active=self.is_motion_timeout_active,
             weather_override_active=self.is_weather_override_active,
             cloud_suppression_active=self._cloud_mgr.is_suppression_active,
+            # How long that suppression has been holding, resolved to one bool
+            # by the same manager (#175). Threaded beside the decision itself
+            # rather than recomputed downstream, so the handler stays pure.
+            cloud_escalation_active=self._cloud_mgr.is_escalation_active,
             climate_temp_flags=self._climate_smoothing_mgr.resolved_flags,
             in_time_window=self.check_adaptive_time,
             # The user's clock alone, kept separate from the gate-folded
@@ -2715,7 +2715,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
 
         # Reset expired manual overrides BEFORE running the pipeline so the
         # pipeline sees the cleared state and computes the correct position.
-        auto_expired = await self.manager.reset_if_needed()
+        auto_expired = self.manager.reset_if_needed()
 
         # On first refresh after HA restart, restore the weather override flag BEFORE
         # the pipeline runs so the weather handler sees the correct state on cycle 1.
@@ -2819,6 +2819,11 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # open to tracking at the exact grace expiry rather than whenever the
         # next incidental update happens to land.
         self._schedule_sun_tracking_gate_wake()
+
+        # Issue #175: and for the cloud-suppression escalation deadline, now
+        # that this cycle's reads have resolved whether suppression is holding
+        # and since when.
+        self._schedule_cloud_escalation_wake()
 
         return AdaptiveCoverData(
             climate_mode_toggle=self.switch_mode,
@@ -2949,6 +2954,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             min_change=self.min_change,
             time_threshold=self.time_threshold,
             special_positions=build_special_positions(options),
+            limit_positions=build_limit_positions(options),
             inverse_state=self._inverse_state,
             force=force,
             is_safety=is_safety,
@@ -4004,15 +4010,17 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             # defaults) before reconciliation can resurrect it (issue #215/#216).
             self.manager.handle_state_change(
                 event_data,
-                expected_position,
-                self._policy,
-                self.manual_reset,
-                self._cmd_svc.is_waiting_for_target,
-                detection_threshold,
-                has_recorded_target=recorded_target is not None,
-                secondary_axis_check=secondary_axis_check,
-                is_in_command_grace=self._grace_mgr.is_in_command_grace_period,
-                is_in_transit=self._cmd_svc._is_cover_in_transit,
+                StateChangeInputs(
+                    our_state=expected_position,
+                    policy=self._policy,
+                    allow_reset=self.manual_reset,
+                    is_waiting=self._cmd_svc.is_waiting_for_target,
+                    manual_threshold=detection_threshold,
+                    has_recorded_target=recorded_target is not None,
+                    secondary_axis_check=secondary_axis_check,
+                    is_in_command_grace=self._grace_mgr.is_in_command_grace_period,
+                    is_in_transit=self._cmd_svc.is_cover_in_transit,
+                ),
             )
 
         self.cover_state_change = False
@@ -4261,7 +4269,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # runtime (auto-reset duration, threshold, command window) so changes
         # take effect without a reload. The detection *strategy* itself is
         # selected at construction; switching it requires a config-entry reload.
-        self.manager.update_config(self._make_detector_config(options))
+        self.manager.update_config(self._make_detector_config(options, rc))
         self.start_value = rc.tracking.interp_start
         self.end_value = rc.tracking.interp_end
         self.normal_list = rc.tracking.interp_list
@@ -4326,6 +4334,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         self._cloud_mgr.update_config(
             enabled=rc.cloud_suppression.enabled,
             hold_time_seconds=rc.cloud_suppression.hold_time_seconds,
+            escalation_delay_seconds=rc.cloud_suppression.escalation_delay_seconds,
         )
         self._climate_smoothing_mgr.update_config(
             enabled=rc.climate_smoothing.enabled,
@@ -4490,6 +4499,10 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             # indeterminate sighting, and the tap is one — but it also means no
             # hold wake is scheduled here.
             cloud_suppression_active=self._cloud_mgr.is_suppression_active,
+            # Pure property read like the line above — the escalation phase is
+            # derived from a stored instant, so an ad-hoc build advances
+            # nothing (#175).
+            cloud_escalation_active=self._cloud_mgr.is_escalation_active,
             climate_temp_flags=self._climate_smoothing_mgr.resolved_flags,
             in_time_window=self.check_adaptive_time,
             # Same clock/gate split as the update-cycle build — and the user-move
@@ -5270,6 +5283,11 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             calibrating=self._cmd_svc.calibrating,
             last_cover_action=self.last_cover_action,
             last_skipped_action=self.last_skipped_action,
+            # The escalation clock's live half (#175). Pure property reads —
+            # the phase is a comparison against a derived deadline, so building
+            # a diagnostics snapshot advances nothing.
+            cloud_suppression_phase=self.cloud_suppression_phase,
+            cloud_escalation_deadline=self.cloud_escalation_deadline,
             min_change=self.min_change,
             time_threshold=self.time_threshold,
             switch_mode=self._toggles.switch_mode,
@@ -5342,6 +5360,14 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             manual_toggle=self.manual_toggle,
             enabled_toggle=(
                 self.enabled_toggle if self.enabled_toggle is not None else True
+            ),
+            # Issue #1376 secondary finding: surfaces whether the auto-off
+            # return-to-default seam is armed, so a diagnostics attachment can
+            # confirm it without guessing.
+            return_to_default_toggle=(
+                self.return_to_default_toggle
+                if self.return_to_default_toggle is not None
+                else False
             ),
             primary_axis_suppression_counts=(
                 self.manager.primary_axis_suppression_counts()
@@ -5827,6 +5853,84 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         )
         return clamped, ordered
 
+    async def _broadcast_default_position(
+        self,
+        position: int,
+        options: dict,
+        reason: str,
+        *,
+        force: bool = False,
+        bypass_auto_control: bool = False,
+        entities: list[str] | None = None,
+        on_resolved: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Clamp, re-frame and fan out a pipeline-bypassing default (issue #1376).
+
+        The ONE dispatch loop shared by the two seams that fan out a
+        configured default position off the main pipeline — the end-of-window
+        return-to-default and the switch's auto-control-OFF return-to-default
+        both call this rather than each stating the clamp/frame/order rule
+        (:meth:`_resolve_broadcast_dispatch`) and the per-entity remap
+        (:meth:`_entity_target`) again at their own call site. (The sunset
+        broadcast is NOT a third caller of this loop — it shares only the
+        resolve half, :meth:`_resolve_sunset_dispatch` /
+        :meth:`_resolve_broadcast_dispatch`, and fans out on its own in
+        ``state/window_transition_tracker.py``. Two seams share this loop;
+        three share the resolve.) Before this existed, the switch seam
+        dispatched the raw logical value with a hardcoded ``inverted=False``
+        instead of asking ``self._inverse_state`` — a true statement about
+        the end-of-window broadcast's frame, but a false one about an
+        inverse-state install's, since both broadcast the SAME configured
+        option (``CONF_DEFAULT_HEIGHT``) and must agree on the wire number
+        for it.
+
+        ``force`` and ``bypass_auto_control`` are forwarded to
+        :meth:`_build_position_context` unchanged for every entity in the
+        fan-out — the end-of-window seam wants neither (its guards already
+        ran above), the switch seam wants both (a sanctioned one-shot
+        transition, issue #293).
+
+        ``entities`` defaults to ``self.entities`` — both current callers
+        broadcast to every cover on the instance — but is accepted rather
+        than hardcoded so a caller that ever needs a subset gets that subset
+        ordered through the same rule instead of silently replaced by the
+        whole instance (the exact affordance :meth:`_resolve_broadcast_dispatch`
+        documents on its own ``entities`` parameter).
+
+        ``on_resolved``, when given, is called with the resolved wire value
+        AND the number of entities in ``ordered`` (the set about to be
+        dispatched) immediately after the clamp/re-frame/order step and
+        BEFORE the first ``apply_position`` dispatch. A caller that records
+        the decision which causes the dispatches (an event, a log line)
+        passes it here so that record lands ahead of the
+        ``cover_command_sent`` events the dispatches themselves write into
+        the same ring — otherwise the ring lists effects before the cause.
+        Passing the dispatched count alongside the wire value means a caller
+        never has to re-derive "how many" from ``self.entities`` itself —
+        which would silently disagree with reality the moment a caller ever
+        passes an ``entities`` subset narrower than the full instance.
+
+        Returns the wire value dispatched (``pos_to_send``), so a caller that
+        logs or records it after the fact does not have to re-derive it.
+        """
+        resolve_entities = entities if entities is not None else self.entities
+        _logical, pos_to_send, ordered = self._resolve_broadcast_dispatch(
+            position, options, resolve_entities
+        )
+        if on_resolved is not None:
+            on_resolved(pos_to_send, len(ordered))
+        for cover in ordered:
+            ctx = self._build_position_context(
+                cover, options, force=force, bypass_auto_control=bypass_auto_control
+            )
+            await self._cmd_svc.apply_position(
+                cover,
+                self._entity_target(cover, pos_to_send, inverted=self._inverse_state),
+                reason,
+                context=ctx,
+            )
+        return pos_to_send
+
     async def _check_time_window_transition(self, now: dt.datetime) -> None:
         """Check time window transitions — delegates to TimeWindowManager.
 
@@ -5888,6 +5992,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
                 return
             options = self.config_entry.options
             effective_pos, is_sunset = self._compute_current_effective_default(options)
+
             # #895's sharp edge (issue #943 item B). This path bypasses the
             # pipeline and sends a POSITION-ONLY default, and a constraint-only
             # slot never becomes the winner, so ``_pipeline_has_active_override``
@@ -5908,50 +6013,54 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
             # about which of the two predicates tripped is what keeps both cases
             # correct without a branch.
             #
-            # Clamped, re-framed and ordered in one call, through the helper the
-            # sunset broadcast also uses: the three steps are one rule and the
-            # two seams must not state it apart. Deliberately NOT
-            # ``_to_cover_frame`` — this seam inverts whenever inverse-state is
-            # configured, unconditional of bypass, floor clamp and
-            # interpolation, and never interpolates. #993's middle-rail
-            # invariant depends on that divergence.
-            effective_pos, pos_to_send, ordered_covers = (
-                self._resolve_broadcast_dispatch(effective_pos, options, self.entities)
-            )
-            self.logger.info(
-                "End time reached — sending effective default %s%% "
-                "(sunset_active=%s) to %s cover(s)",
-                pos_to_send,
-                is_sunset,
-                len(self.entities),
-            )
-            self._event_buffer.record(
-                {
-                    "ts": dt.datetime.now(dt.UTC).isoformat(),
-                    "event": "end_time_default_sent",
-                    "position": pos_to_send,
-                    "sunset_active": is_sunset,
-                    "cover_count": len(self.entities),
-                }
-            )
-            # Already ordered on ``pos_to_send`` by the resolve above, in the
-            # same frame ``_entity_target`` gets below — one derivation, so the
-            # ordering view and the dispatch cannot disagree about the direction
-            # of travel (issue #1118).
-            for cover_entity in ordered_covers:
-                ctx = self._build_position_context(cover_entity, options, force=False)
-                await self._cmd_svc.apply_position(
-                    cover_entity,
-                    # ``pos_to_send`` was inverted iff inverse-state is
-                    # configured (unconditional of bypass/floor-clamp/interp), so
-                    # the middle-rail remap must un-invert in THAT space, not the
-                    # cached main-pipeline flag (#993).
-                    self._entity_target(
-                        cover_entity, pos_to_send, inverted=self._inverse_state
-                    ),
-                    "end_time_default",
-                    context=ctx,
+            # Clamp, re-frame, order and fan out in one call — shared with the
+            # switch's auto-control-OFF return-to-default (issue #1376). The
+            # sunset broadcast is NOT a third caller of this loop: it shares
+            # only the resolve half (_resolve_broadcast_dispatch) and fans out
+            # on its own in state/window_transition_tracker.py. Two seams
+            # share this loop; three share the resolve — stating either rule
+            # apart is the two-site mirror that let #1376 happen.
+            #
+            # The record of THIS decision (the event below) must land in the
+            # ring before the ``cover_command_sent`` events the dispatches
+            # inside the call below write — otherwise the ring lists the
+            # effects ahead of the cause. ``on_resolved`` runs at the resolve
+            # step, before any dispatch, so the event/log stay at this call
+            # site (as originally planned) while still landing first.
+            #
+            # ``cover_count`` comes from ``on_resolved``'s second argument
+            # (the size of the dispatched ``ordered`` set), not
+            # ``len(self.entities)`` — this call site never passes an
+            # ``entities`` subset today so the two numbers happen to agree,
+            # but reading ``self.entities`` here would silently disagree with
+            # what was actually dispatched the first time a caller narrows
+            # the fan-out.
+            def _record_end_time_default_sent(
+                resolved_pos: int, cover_count: int
+            ) -> None:
+                self.logger.info(
+                    "End time reached — sending effective default %s%% "
+                    "(sunset_active=%s) to %s cover(s)",
+                    resolved_pos,
+                    is_sunset,
+                    cover_count,
                 )
+                self._event_buffer.record(
+                    {
+                        "ts": dt.datetime.now(dt.UTC).isoformat(),
+                        "event": "end_time_default_sent",
+                        "position": resolved_pos,
+                        "sunset_active": is_sunset,
+                        "cover_count": cover_count,
+                    }
+                )
+
+            await self._broadcast_default_position(
+                effective_pos,
+                options,
+                "end_time_default",
+                on_resolved=_record_end_time_default_sent,
+            )
             # Trigger a normal refresh so sensor state and diagnostics reflect
             # the commands just dispatched above. Distinct from the #1241
             # refresh earlier in this function: that one runs BEFORE dispatch
@@ -6003,10 +6112,11 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         # already implies ``expiry_for`` is non-None; the guard below stays as
         # the belt-and-braces read.
         for eid in self.manager.active_entities():
-            started_at = self.manager.manual_control_time.get(eid)
+            state = self.manager.override_for(eid)
             expires_at = self.manager.expiry_for(eid)
-            if started_at is None or expires_at is None:
+            if state is None or expires_at is None:
                 continue
+            started_at = state.started_at
             if started_at.tzinfo is None:
                 started_at = started_at.replace(tzinfo=dt.UTC)
             entries[eid] = {
@@ -6016,9 +6126,7 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
                 # reader (or a saved diagnostics file) already knows is unchanged.
                 "active": True,
                 "started_at": started_at.isoformat(),
-                "started_at_source": self.manager.manual_control_start_source.get(
-                    eid, STARTED_AT_SOURCE_ENGAGED
-                ),
+                "started_at_source": state.start_source,
                 "expires_at": expires_at.isoformat(),
                 "remaining_seconds": int(max(0, (expires_at - now).total_seconds())),
             }
@@ -6037,9 +6145,14 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         the duration mode from the per-cycle ``RuntimeConfig`` mirror, resolves
         the sunset/sunrise boundaries through :func:`.helpers.read_sun_boundaries`
         — the same definition the day/night position and the time window's
-        sunrise provider use — reads the operating window's resolved end, then
-        hands the arithmetic to the pure
-        :func:`.helpers.resolve_override_deadline`.
+        sunrise provider use — asks ``_time_mgr`` both whether the operating
+        window has an end and what it resolves to, then hands the arithmetic to
+        the pure :func:`.helpers.resolve_override_deadline`.
+
+        Three source shapes meet here, each deliberate and each documented at
+        the read: a per-cycle mirror for the mode, a per-cycle mirror for the
+        window end, and a live read for the four sun-boundary keys (issue
+        #1061).
 
         ``fixed`` — the default, and what an install that never touched the
         option gets — short-circuits before any state read, so the common case
@@ -6064,20 +6177,47 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         boundaries = None
         cover_data = self._cover_data
         if cover_data is not None:
+            # The four sun-boundary option keys (sunset/sunrise time entity and
+            # offset) are read LIVE and deliberately have NO RuntimeConfig
+            # mirror. Recorded decision for issue #1061, which asked why this
+            # read is not mirrored like the mode and the window end:
+            #   * ``read_sun_boundaries`` has a second coordinator caller — the
+            #     ``_resolve_window_sunrise`` closure injected into
+            #     TimeWindowManager (see __init__) — invoked lazily, outside the
+            #     update cycle and before the first ``_update_options``. It
+            #     cannot read a per-cycle mirror.
+            #   * Mirroring only THIS call site would leave two sources for the
+            #     same four keys — the exact shape #1061 objects to, relocated.
+            #     Mirroring both would put a stale read on the #1256/#1340
+            #     window gate.
+            #   * A raw-value slice would also duplicate the concepts
+            #     ``helpers.SunBoundaryOptions`` already names in resolved form.
+            # Reading RAW ``config_entry.options`` here rather than
+            # ``self._resolved_options`` is safe because none of these keys is
+            # in ``config_fields.TEMPLATABLE_KEYS`` — the two dicts are
+            # value-identical for them (#577). A change to any of the six keys
+            # this function reads reloads the entry outright: none is in
+            # ``_RUNTIME_APPLICABLE_OPTIONS`` (pinned by
+            # TestDeadlineOptionsForceAReload).
             boundaries = read_sun_boundaries(self.hass, options, cover_data.sun_data)
 
         # An unset window end is NO anchor. ``TimeWindowManager.end_time``
         # normalises the ``BLANK_TIME`` sentinel onto tomorrow's midnight by
         # design, so consulting it for an unconfigured window would produce a
-        # deadline that recedes a day at every local midnight and the hold would
-        # never expire. Decide off the raw options, where the sentinel is still
-        # distinguishable (issue #1044).
+        # deadline that recedes a day at every local midnight and the hold
+        # would never expire (issue #1044). The manager answers BOTH halves —
+        # ``has_configured_end`` screens the sentinel on its own mirrored raw
+        # values, ``end_time`` resolves the instant — so the predicate and the
+        # value can never describe different configurations. Until #1061 the
+        # predicate read ``config_entry.options`` live while the value came
+        # from the ``TimeWindowSlice`` mirror: two sources for the same two
+        # option keys, on one line.
         deadline = resolve_override_deadline(
             mode,
             dt_util.as_utc(anchor).replace(tzinfo=None),
             boundaries=boundaries,
             window_end_local_naive=(
-                self._time_mgr.end_time if has_configured_window_end(options) else None
+                self._time_mgr.end_time if self._time_mgr.has_configured_end else None
             ),
         )
         if deadline is None:
@@ -6247,6 +6387,56 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         await self.async_request_refresh()
 
     @callback
+    def _schedule_cloud_escalation_wake(self) -> None:
+        """Schedule one refresh at the cloud-escalation deadline (issue #175).
+
+        The FOURTH instance of the pattern established by
+        :meth:`_schedule_gate_fallback_wake` (#742),
+        :meth:`_schedule_custom_position_hold_wake` (#1012) and
+        :meth:`_schedule_sun_tracking_gate_wake` (#1167) — one shared
+        cancel-then-arm seam, one handle per caller, no new scheduling code.
+
+        The manager's phase is a pure comparison against a derived deadline, so
+        the escalation would eventually be noticed by any later cycle; this
+        wake is what makes "after two hours" mean two hours rather than two
+        hours plus however long until the next incidental update. A quiet
+        overcast afternoon is exactly when incidental updates are rarest, which
+        is exactly when the escalation matters most.
+
+        ``seconds_until_escalation`` answers ``None`` for all three
+        no-wake-needed cases at once — nothing holding, no delay configured, or
+        already escalated — which is the contract
+        :meth:`_schedule_optional_wake` takes.
+        """
+        self._cloud_escalation_unsub = self._schedule_optional_wake(
+            self._cloud_escalation_unsub,
+            self._cloud_mgr.seconds_until_escalation(),
+            self._on_cloud_escalation_due,
+        )
+
+    async def _on_cloud_escalation_due(self, _now: dt.datetime) -> None:
+        """Fire when a cloud-suppression hold reaches its escalation deadline."""
+        self._cloud_escalation_unsub = None
+        await self.async_request_refresh()
+
+    @property
+    def cloud_suppression_phase(self):
+        """How far along the current cloud-suppression hold is (issue #175).
+
+        A property rather than a direct ``_cloud_mgr`` read at the diagnostics
+        construction site, matching ``automatic_control`` /
+        ``check_adaptive_time`` / ``last_cover_action`` beside it: the
+        coordinator's own read-only surface is what consumers bind to, not the
+        manager it happens to delegate to.
+        """
+        return self._cloud_mgr.phase
+
+    @property
+    def cloud_escalation_deadline(self):
+        """Absolute UTC instant the cloudy hold escalates at, or None (#175)."""
+        return self._cloud_mgr.escalation_deadline
+
+    @callback
     def _schedule_refresh_after(self, secs: float) -> None:
         """Schedule one refresh ``secs`` from now (issue #756).
 
@@ -6375,6 +6565,15 @@ class AdaptiveDataUpdateCoordinator(DataUpdateCoordinator[AdaptiveCoverData]):
         if self._sun_tracking_gate_unsub is not None:
             self._sun_tracking_gate_unsub()
             self._sun_tracking_gate_unsub = None
+
+        # Cancel the cloud-escalation deadline wake (issue #175). The
+        # longest-lived wake in this family by an order of magnitude — the
+        # other three measure grace windows in minutes, this one can be
+        # legitimately pending for hours — so an unload that left it armed
+        # would refresh a coordinator nobody owns any more.
+        if self._cloud_escalation_unsub is not None:
+            self._cloud_escalation_unsub()
+            self._cloud_escalation_unsub = None
 
         # Stand down a calibration run and its republish tick. The run holds
         # ``calibrating`` on the command service, so an unload that left it

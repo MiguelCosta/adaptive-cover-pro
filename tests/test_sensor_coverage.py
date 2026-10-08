@@ -20,6 +20,7 @@ from custom_components.adaptive_cover_pro.sensor import (
     AdaptiveCoverClimateStatusSensor,
     AdaptiveCoverControlStatusSensor,
     AdaptiveCoverLastActionSensor,
+    AdaptiveCoverLastSkippedActionSensor,
     AdaptiveCoverSunPositionSensor,
     _DIAGNOSTIC_SPECS,
 )
@@ -582,6 +583,7 @@ def test_last_action_sensor_native_value_with_timestamp():
     assert "test_blind" in val
     assert "set_cover_position" in val
     assert "14:30:00" in val
+    assert "50%" in val
 
 
 @pytest.mark.unit
@@ -607,7 +609,32 @@ def test_last_action_sensor_native_value_without_timestamp():
         coordinator=coord,
     )
     val = sensor.native_value
-    assert val == "set_cover_position → test_blind"
+    assert val == "set_cover_position → test_blind → 50%"
+
+
+@pytest.mark.unit
+def test_last_action_sensor_native_value_position_none_fallback():
+    """native_value falls back to 'unknown' when position is None."""
+    coord = _make_coordinator(
+        diagnostics={
+            "last_cover_action": {
+                "entity_id": "cover.test_blind",
+                "service": "set_cover_position",
+                "position": None,
+                "timestamp": "",  # empty timestamp
+            }
+        }
+    )
+    entry = _make_config_entry()
+    sensor = AdaptiveCoverLastActionSensor(
+        config_entry_id="test_entry",
+        hass=_make_hass(),
+        config_entry=entry,
+        name="Test",
+        coordinator=coord,
+    )
+    val = sensor.native_value
+    assert val == "set_cover_position → test_blind → unknown"
 
 
 @pytest.mark.unit
@@ -658,6 +685,26 @@ def test_last_action_sensor_extra_state_attributes_no_action():
         coordinator=coord,
     )
     assert sensor.extra_state_attributes is None
+
+
+@pytest.mark.unit
+def test_last_skipped_sensor_native_value_no_action():
+    """native_value is the stable no_action_skipped code, not an English string.
+
+    Translatable via entity.sensor.last_skipped_action.state.no_action_skipped
+    (issue #1353) rather than the untranslatable prose HA would otherwise show
+    verbatim in every language.
+    """
+    coord = _make_coordinator(diagnostics={"last_skipped_action": {}})
+    entry = _make_config_entry()
+    sensor = AdaptiveCoverLastSkippedActionSensor(
+        config_entry_id="test_entry",
+        hass=_make_hass(),
+        config_entry=entry,
+        name="Test",
+        coordinator=coord,
+    )
+    assert sensor.native_value == "no_action_skipped"
 
 
 # ---------------------------------------------------------------------------

@@ -28,6 +28,9 @@ from custom_components.adaptive_cover_pro.managers.cover_command import (
     PositionContext,
     build_special_positions,
 )
+from custom_components.adaptive_cover_pro.managers.manual_override import (
+    StateChangeInputs,
+)
 
 pytestmark = pytest.mark.usefixtures("neutralize_venetian_delays")
 
@@ -554,17 +557,19 @@ async def test_tilt_on_target_plus_position_back_drive_does_not_trip_manual_over
     event.new_state.last_updated = dt.datetime.now(dt.UTC)
 
     mgr.handle_state_change(
-        states_data=event,
-        our_state=34,
-        policy=get_policy("cover_venetian"),
-        allow_reset=True,
-        is_waiting=lambda _eid: False,
-        manual_threshold=3,
-        secondary_axis_check=SecondaryAxisCheck(
-            expected=70,
-            attribute="current_tilt_position",
-            label="tilt",
-            suppression=attached_policy.is_in_tilt_suppression,
+        event,
+        StateChangeInputs(
+            our_state=34,
+            policy=get_policy("cover_venetian"),
+            allow_reset=True,
+            is_waiting=lambda _eid: False,
+            manual_threshold=3,
+            secondary_axis_check=SecondaryAxisCheck(
+                expected=70,
+                attribute="current_tilt_position",
+                label="tilt",
+                suppression=attached_policy.is_in_tilt_suppression,
+            ),
         ),
     )
 
@@ -656,17 +661,19 @@ async def test_tilt_only_small_mid_settle_drift_does_not_trip_manual_override(
     event.new_state.last_updated = dt.datetime.now(dt.UTC)
 
     mgr.handle_state_change(
-        states_data=event,
-        our_state=50,
-        policy=get_policy("cover_venetian"),
-        allow_reset=True,
-        is_waiting=lambda _eid: False,
-        manual_threshold=5,
-        secondary_axis_check=SecondaryAxisCheck(
-            expected=70,
-            attribute="current_tilt_position",
-            label="tilt",
-            suppression=attached_policy.is_in_tilt_suppression,
+        event,
+        StateChangeInputs(
+            our_state=50,
+            policy=get_policy("cover_venetian"),
+            allow_reset=True,
+            is_waiting=lambda _eid: False,
+            manual_threshold=5,
+            secondary_axis_check=SecondaryAxisCheck(
+                expected=70,
+                attribute="current_tilt_position",
+                label="tilt",
+                suppression=attached_policy.is_in_tilt_suppression,
+            ),
         ),
     )
 
@@ -1051,3 +1058,58 @@ async def test_coupled_cover_with_option_off_stable_at_reachable_endpoint(svc, h
     # Cover rests stably at the reachable endpoint position, tilt correct.
     assert cover.position == 3
     assert cover.tilt == 100
+
+
+# ---------------------------------------------------------------------------
+# Issue #1350 — the min/max limit's one-shot delta-gate latch must not starve
+# the tilt axis when it holds the carriage still (issue #954 scope).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_limit_hold_still_services_secondary_axis(svc, hass):
+    """A held limit-pinned carriage still services the tilt axis (#954/#1350).
+
+    Issue #1350 narrows the min/max limit's permanent delta-gate bypass to a
+    one-shot latch (``PerEntityState.snapped_limit``): once the carriage has
+    already been commanded to a configured limit, a repeated approach falls
+    through to the ordinary delta_position gate and is held
+    (``delta_too_small``) instead of re-firing. That hold must not starve
+    the tilt axis (issue #954) — the carriage delta gates only the
+    carriage, and ``_service_secondary_axis`` runs from every hysteresis
+    skip branch, including this new one, before the skip returns.
+
+    Floor latched at 10 (a prior cycle already dispatched there), cover
+    reports 11, min_change=5 (delta=1 < 5) — the carriage is held, but
+    ``maybe_update_tilt_only`` must still fire for the tilt target.
+    """
+    entity_id = "cover.venetian_x"
+    hass.states.get.return_value = _state_with_position(11)
+
+    policy = MagicMock()
+    policy.after_position_command = AsyncMock()
+    policy.maybe_update_tilt_only = AsyncMock()
+
+    ctx = PositionContext(
+        auto_control=True,
+        manual_override=False,
+        sun_just_appeared=False,
+        min_change=5,
+        time_threshold=0,
+        special_positions=[0, 100, 10],
+        limit_positions=[10],
+        force=False,
+        tilt=70,
+        policy=policy,
+    )
+    # Pre-arm the latch as if a prior cycle already dispatched to the floor.
+    svc.state(entity_id).snapped_limit = 10
+
+    with (
+        _patch_caps_dual_axis(),
+        patch.object(svc, "_check_time_delta", return_value=True),
+    ):
+        outcome, reason = await svc.apply_position(entity_id, 10, "solar", ctx)
+
+    assert (outcome, reason) == ("skipped", "delta_too_small")
+    policy.maybe_update_tilt_only.assert_awaited_once()

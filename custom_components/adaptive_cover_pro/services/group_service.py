@@ -20,6 +20,8 @@ from homeassistant.helpers import entity_registry as er
 from voluptuous.validators import Coerce, Range
 
 from ..const import DOMAIN, GROUP_SCENE_SELECT_AUTO, GroupScene
+from ..state.area_resolver import area_device_ids
+from ..state.device_link import device_config_entry_ids
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant, ServiceCall
@@ -97,14 +99,8 @@ def resolve_group_targets(
     if not entity_ids and not device_ids and not area_ids:
         return list(groups.values())
 
-    if area_ids:
-        dev_reg = dr.async_get(hass)
-        for area_id in area_ids:
-            device_ids.extend(
-                device.id
-                for device in dev_reg.devices.values()
-                if device.area_id == area_id
-            )
+    for area_id in area_ids:
+        device_ids.extend(area_device_ids(hass, area_id))
 
     resolved: dict[str, GroupCoordinator] = {}
     if device_ids:
@@ -113,7 +109,7 @@ def resolve_group_targets(
             device = dev_reg.async_get(device_id)
             if device is None:
                 continue
-            for entry_id in device.config_entries:
+            for entry_id in device_config_entry_ids(device):
                 if entry_id in groups:
                     resolved[entry_id] = groups[entry_id]
 

@@ -17,6 +17,7 @@ from freezegun import freeze_time
 from custom_components.adaptive_cover_pro.const import (
     CONF_CLOUD_SUPPRESSION,
     CONF_CLOUDY_POSITION,
+    CONF_CLOUDY_TILT,
     CONF_DEFAULT_HEIGHT,
     CONF_DEFAULT_TILT,
     CONF_END_OF_WINDOW_POS,
@@ -1146,6 +1147,67 @@ def test_build_reads_tilt_limits_and_sun_only_toggles():
 
 
 @pytest.mark.unit
+def test_build_reads_snap_closed_below_and_threshold():
+    """snap_closed_below / snap_closed_threshold flow onto the snapshot (#1379)."""
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    builder, _, _ = _make_builder()
+    cover_data = MagicMock()
+    cover_data.config = MagicMock()
+    cover_data.sun_data = MagicMock()
+
+    snapshot = builder.build(
+        {CONF_SNAP_CLOSED_BELOW: True, CONF_SNAP_CLOSED_THRESHOLD: 15},
+        cover_data=cover_data,
+        cover_type="cover_blind",
+        climate_readings=None,
+        manual_override_active=False,
+        motion_timeout_active=False,
+        weather_override_active=False,
+        in_time_window=True,
+        current_cover_position=None,
+        is_glare_zone_enabled=lambda idx: False,
+        effective_default=0,
+        is_sunset_active=False,
+    )
+    assert snapshot.snap_closed_below is True
+    assert snapshot.snap_closed_threshold == 15
+
+
+@pytest.mark.unit
+def test_build_snap_closed_below_default_when_options_absent():
+    """No snap options → the snapshot defaults preserve the pre-#1379 no-op."""
+    from custom_components.adaptive_cover_pro.const import (
+        DEFAULT_SNAP_CLOSED_THRESHOLD,
+    )
+
+    builder, _, _ = _make_builder()
+    cover_data = MagicMock()
+    cover_data.config = MagicMock()
+    cover_data.sun_data = MagicMock()
+
+    snapshot = builder.build(
+        {},
+        cover_data=cover_data,
+        cover_type="cover_blind",
+        climate_readings=None,
+        manual_override_active=False,
+        motion_timeout_active=False,
+        weather_override_active=False,
+        in_time_window=True,
+        current_cover_position=None,
+        is_glare_zone_enabled=lambda idx: False,
+        effective_default=0,
+        is_sunset_active=False,
+    )
+    assert snapshot.snap_closed_below is False
+    assert snapshot.snap_closed_threshold == DEFAULT_SNAP_CLOSED_THRESHOLD
+
+
+@pytest.mark.unit
 def test_build_tilt_limits_default_when_options_absent():
     """No tilt options → snapshot uses no-op defaults (100 / 0 / False)."""
     builder, _, _ = _make_builder()
@@ -1769,6 +1831,108 @@ def test_build_carries_a_closed_gate_onto_the_snapshot():
 
 
 @pytest.mark.unit
+def test_build_carries_the_blocking_gate_sensors_onto_the_snapshot():
+    """Which sensor closed the gate reaches the snapshot, for the skip reason (#1359)."""
+    from unittest.mock import patch
+
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_SUN_TRACKING_GATE_SENSORS,
+    )
+
+    states = {"binary_sensor.ac": "off", "binary_sensor.away": "on"}
+    builder, _, _ = _make_builder()
+    opts = {CONF_SUN_TRACKING_GATE_SENSORS: ["binary_sensor.ac", "binary_sensor.away"]}
+
+    with patch(
+        "custom_components.adaptive_cover_pro.pipeline.snapshot_builder.get_safe_state",
+        side_effect=lambda _hass, entity_id: states.get(entity_id),
+    ):
+        snapshot = _build_minimal(builder, opts)
+    # Sensors fold with ``any``, so one sensor ON means the gate is open and
+    # NOTHING is blocking — an off sensor in that fold blocked no one.
+    assert snapshot.sun_tracking_gate_closed is False
+    assert snapshot.sun_tracking_gate_blockers == ()
+
+    states["binary_sensor.away"] = "off"
+    builder, _, _ = _make_builder()
+    with patch(
+        "custom_components.adaptive_cover_pro.pipeline.snapshot_builder.get_safe_state",
+        side_effect=lambda _hass, entity_id: states.get(entity_id),
+    ):
+        snapshot = _build_minimal(builder, opts)
+    assert snapshot.sun_tracking_gate_closed is True
+    assert snapshot.sun_tracking_gate_blockers == (
+        "binary_sensor.ac",
+        "binary_sensor.away",
+    )
+
+
+@pytest.mark.unit
+def test_a_template_closed_gate_names_no_blocking_sensors():
+    """AND mode: a false template can close a gate the sensors voted to open.
+
+    The sensors fold with ``any``, so an ON sensor opens their side outright.
+    When the template is what closed the gate, naming the off sensor beside it
+    would tell the user to switch on an entity that was already outvoted while
+    the real cause goes unnamed.
+    """
+    from unittest.mock import patch
+
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_SUN_TRACKING_GATE_SENSORS,
+        CONF_SUN_TRACKING_GATE_TEMPLATE,
+        CONF_SUN_TRACKING_GATE_TEMPLATE_MODE,
+        TemplateCombineMode,
+    )
+
+    states = {"binary_sensor.ac": "on", "binary_sensor.away": "off"}
+    builder, _, _ = _make_builder()
+    opts = {
+        CONF_SUN_TRACKING_GATE_SENSORS: ["binary_sensor.ac", "binary_sensor.away"],
+        CONF_SUN_TRACKING_GATE_TEMPLATE: "{{ x }}",
+        CONF_SUN_TRACKING_GATE_TEMPLATE_MODE: TemplateCombineMode.AND,
+    }
+    with (
+        patch(
+            "custom_components.adaptive_cover_pro.pipeline.snapshot_builder.get_safe_state",
+            side_effect=lambda _hass, entity_id: states.get(entity_id),
+        ),
+        patch(
+            "custom_components.adaptive_cover_pro.pipeline.snapshot_builder.render_condition_or_none",
+            return_value=False,
+        ),
+    ):
+        snapshot = _build_minimal(builder, opts)
+    assert snapshot.sun_tracking_gate_closed is True
+    assert snapshot.sun_tracking_gate_blockers == ()
+
+
+@pytest.mark.unit
+def test_master_toggle_off_names_no_gate_blockers():
+    """Tracking switched off by hand must not blame a gate sensor (#1167 audit)."""
+    from unittest.mock import patch
+
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_ENABLE_SUN_TRACKING,
+        CONF_SUN_TRACKING_GATE_SENSORS,
+    )
+
+    builder, _, _ = _make_builder()
+    opts = {
+        CONF_ENABLE_SUN_TRACKING: False,
+        CONF_SUN_TRACKING_GATE_SENSORS: ["binary_sensor.ac"],
+    }
+    with patch(
+        "custom_components.adaptive_cover_pro.pipeline.snapshot_builder.get_safe_state",
+        return_value="off",
+    ):
+        snapshot = _build_minimal(builder, opts)
+    assert snapshot.enable_sun_tracking is False
+    assert snapshot.sun_tracking_gate_closed is False
+    assert snapshot.sun_tracking_gate_blockers == ()
+
+
+@pytest.mark.unit
 def test_build_carries_the_interpolation_curve():
     """The curve reaches the pure pipeline as data, not as a coordinator handle.
 
@@ -2063,3 +2227,71 @@ def test_build_gates_the_weather_override_tilt_on_the_policy(cover_type, expecte
         is_sunset_active=False,
     )
     assert snapshot.weather_override_tilt == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("opts", "expected"),
+    [
+        ({CONF_CLOUDY_TILT: 100}, 100),
+        ({CONF_CLOUDY_TILT: 0}, 0),
+        ({}, None),
+    ],
+    ids=["configured", "zero-is-not-unset", "absent"],
+)
+def test_build_climate_options_reads_the_cloudy_tilt(opts, expected):
+    """The cloud slat angle rides onto ClimateOptions beside its position (#175).
+
+    The ``absent`` row is the one that matters: no stored key must produce
+    ``None``, not a default, because ``None`` is what tells the handler to
+    claim no tilt and leave the slats alone — the invariant that lets the
+    option ship with no config migration. The ``0`` row guards the usual
+    optional-percentage trap: closed slats during a cloudy hold are a real
+    privacy setting, not "unset".
+    """
+    builder, _, _ = _make_builder(policy=get_policy("cover_venetian"))
+
+    options = builder.build_climate_options(opts)
+
+    assert options.cloudy_tilt == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("cover_type", "expected"),
+    [
+        ("cover_venetian", 100),
+        ("cover_day_night_shade", None),
+        ("cover_blind", None),
+    ],
+    ids=[
+        "venetian-claims-the-slat-angle",
+        "day-night-shade-drops-it",
+        "blind-drops-it",
+    ],
+)
+def test_build_climate_options_gates_the_cloudy_tilt_on_the_policy(
+    cover_type, expected
+):
+    """A stored cloud slat angle only reaches the pipeline on a type that has slats.
+
+    ``cloud_suppression_includes_tilt`` gates the config-flow field, but the
+    key can still be *stored* on a type that never shows it:
+    ``acp.set_light_cloud`` writes it without a cover-type gate, and a venetian
+    → blind cover-type switch deliberately deletes nothing (#1132).
+
+    Read ungated, that stray 100 would ride out on the winning
+    ``PipelineResult.tilt`` during every cloudy hold, driving a second axis the
+    cover either does not have or already drives through ``cloudy_position`` —
+    with no UI field to see or clear it. Gating the read here rather than in
+    the handler closes all three routes at once (service, type switch,
+    hand-edited options) on the one seam that builds every ``ClimateOptions``.
+
+    The venetian row is the no-change guard: the flag is True there, so
+    ``options.get()`` is reached exactly as it would be ungated.
+    """
+    builder, _, _ = _make_builder(policy=get_policy(cover_type))
+
+    options = builder.build_climate_options({CONF_CLOUDY_TILT: 100})
+
+    assert options.cloudy_tilt == expected

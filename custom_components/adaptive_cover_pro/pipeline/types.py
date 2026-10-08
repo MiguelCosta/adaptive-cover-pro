@@ -7,7 +7,9 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from ..const import (
+    DEFAULT_SNAP_CLOSED_THRESHOLD,
     DEFAULT_TRACKING_SEASONS,
+    POSITION_OPEN,
     AxisConstraintMode,
     ClimateStrategy,
     ControlMethod,
@@ -59,6 +61,16 @@ class ClimateOptions:
     winter_close_insulation: bool
     summer_close_bypass_sun_floor: bool = False
     cloudy_position: int | None = None
+    # Slat angle commanded alongside ``cloudy_position`` while cloud
+    # suppression holds (issue #175). Surfaced only on cover types whose
+    # policy sets ``CoverTypePolicy.cloud_suppression_includes_tilt`` — the
+    # same gate ``weather_override_tilt`` uses (#1297) — and read through it in
+    # the snapshot builder, so a value left behind by a cover-type switch never
+    # reaches a cover with no slat axis. Has NO default: absent means the
+    # handler names no tilt and the slats hold their current angle, which is
+    # the pre-#175 behaviour (so no config migration). An explicit 0 is a real
+    # answer (slats closed) and is distinguished with ``is not None``.
+    cloudy_tilt: int | None = None
     # Extreme-heat mode (issue #766). ``temp_extreme_heat`` None = feature off.
     # ``extreme_heat_position`` None = use DEFAULT_EXTREME_HEAT_POSITION; an
     # explicit 0 is honored (distinguished with ``is not None``).
@@ -383,6 +395,31 @@ class CustomPositionSensorState:
         return self.slot_name or (self.entity_ids[0] if self.entity_ids else "template")
 
 
+@dataclass(frozen=True, slots=True)
+class SunTrackingState:
+    """The resolved sun-tracking verdict for one cycle (issue #1359).
+
+    A dataclass rather than the 3-tuple it replaced, per CODING_GUIDELINES
+    § "Prefer Dataclasses Over Multi-Field Tuples" — the three fields are read
+    at the snapshot-construction site and positional unpacking gets brittle the
+    moment a fourth is added.
+
+    ``gate_closed`` is True ONLY when the master toggle is on and a configured
+    gate resolved false, and ``blockers`` is non-empty only alongside it — the
+    #1167 audit rule, so a user who simply switched sun tracking off is never
+    pointed at a gate they never configured.
+    """
+
+    enabled: bool
+    gate_closed: bool = False
+    blockers: tuple[str, ...] = ()
+    # Whether the gate's condition template is also voting shut. Separate from
+    # ``blockers`` because it is a different kind of cause with a different fix:
+    # in AND mode the template can be the ONLY reason, and naming just the
+    # sensors there tells the user to switch on entities that will not help.
+    template_blocking: bool = False
+
+
 @dataclass(frozen=True)
 class PipelineSnapshot:
     """Raw state passed to all pipeline handlers.
@@ -452,6 +489,16 @@ class PipelineSnapshot:
     # otherwise a user who simply switched sun tracking off would be told a gate
     # they never configured is closed (issue #1167 audit).
     sun_tracking_gate_closed: bool = False
+    # Which gate sensors are currently voting it shut, so the skip reason can
+    # name them instead of leaving the user to find the culprit by hand
+    # (issue #1359). Empty when the gate closed on a template rather than a
+    # sensor, and empty whenever ``sun_tracking_gate_closed`` is False — the
+    # #1167 audit rule again: a toggle-off user is never handed a sensor.
+    sun_tracking_gate_blockers: tuple[str, ...] = ()
+    # The gate's condition template is also voting shut (issue #1359). Paired
+    # with the sensor list above so the skip reason can name either cause, or
+    # both — in AND mode the template is often the only one.
+    sun_tracking_gate_template_blocking: bool = False
 
     # Minimum position mode: when True, the configured position acts as a floor —
     # the handler returns max(configured, raw_calculated) instead of always returning configured.
@@ -635,6 +682,17 @@ class PipelineSnapshot:
     minimize_movements: bool = False
     max_coverage_steps: int = 1
 
+    # Sun-tracking declutter snap (opt-in, issue #1379). When True, a computed
+    # sun-tracking position axis demand whose gap to the axis's closed endpoint
+    # is greater than 0 and less than ``snap_closed_threshold`` collapses to
+    # that endpoint instead of leaving a barely-open sliver. Runs after
+    # ``minimize_movements`` quantization and before the floor/limit clamp in
+    # ``solar_position_from_geometry``, so an active min-position floor always
+    # wins. Position axis / sun-tracking outputs only. Defaults preserve the
+    # un-snapped behavior.
+    snap_closed_below: bool = False
+    snap_closed_threshold: int = DEFAULT_SNAP_CLOSED_THRESHOLD
+
     # Whether the sun-tracking 1 % floor applies this cycle (issue #569). The
     # solar branch and the glare-zone handler floor the geometric position at
     # ``SOLAR_TRACKING_FLOOR_PCT`` so open/close-only covers never fully retract
@@ -682,6 +740,29 @@ class PipelineSnapshot:
     # it elsewhere. Defaults False so snapshots that don't set it behave
     # exactly as before.
     climate_extreme_heat_active: bool = False
+
+    # Resolved cloud-ESCALATION verdict from CloudSuppressionManager (issue
+    # #175). Same division of labour as ``cloud_suppression_active`` above: the
+    # manager owns the start instant and the derived deadline, the pure handler
+    # reads this one bool. True means the hold has outlived its configured
+    # escalation delay, so ``CloudSuppressionHandler`` answers with
+    # ``unshaded_position`` instead of the cloudy position. It is still gated
+    # behind the whole guard stack, so an escalated clock can never command a
+    # position while the sun is outside the window FOV (#417). Defaults False so
+    # snapshots that don't set it behave exactly as before.
+    cloud_escalation_active: bool = False
+
+    # What "let the sun reach the window" resolves to on THIS cover type —
+    # ``CoverTypePolicy.position_for_intent(sun_through=True)``, computed once
+    # per cycle by the snapshot builder (issue #175). Read by the escalated
+    # cloud branch, which must not spell the answer as a literal 100:
+    # ``CoverAxis.open_blocks_sun`` is True for awnings, where logical 100 is
+    # fully EXTENDED and therefore maximum shade, so a hardcoded 100 would
+    # deploy an awning after two hours of cloud — the exact inverse of the ask.
+    # Defaults to ``POSITION_OPEN``, the answer for every cover family whose
+    # open end lets the sun through (blind / venetian / tilt / shade), so a
+    # snapshot built without the builder still behaves sensibly.
+    unshaded_position: int = POSITION_OPEN
 
 
 # ---------------------------------------------------------------------------
@@ -921,6 +1002,18 @@ class PipelineResult:
     # the carriage. Cover-type-agnostic — set by the registry, acted on only
     # inside cover_types/.
     tilt_only_contribution_active: bool = False
+
+    # When True, this result is the cloud-suppression ESCALATION: the hold has
+    # outlived its configured delay and the handler is asking for the unshaded
+    # position rather than the cloudy one (issue #175). Structurally identical
+    # to ``tilt_only_contribution_active`` above — cover-type-agnostic, set by
+    # exactly one writer (``CloudSuppressionHandler``), read only inside
+    # ``cover_types/``, where ``VenetianPolicy`` treats it as a fifth
+    # independent exemption from the tilt-only carriage pin. Without that the
+    # escalation would never reach the hardware on a tilt-only venetian: the
+    # pin rewrites every CLOUD position back to closed, which is precisely what
+    # the reporter's own diagnostics show happening today.
+    cloud_escalation_active: bool = False
 
     # 1-based slot number of the tilt-only contribution that was *applied*
     # (overlaid its slat angle onto the position winner). Set by the registry

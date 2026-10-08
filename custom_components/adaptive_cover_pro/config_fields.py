@@ -56,7 +56,9 @@ from .const import (
     CONF_CLOUD_COVERAGE_THRESHOLD,
     CONF_CLOUD_SUPPRESSION,
     CONF_CLOUD_SUPPRESSION_HOLD_TIME,
+    CONF_CLOUD_ESCALATION_DELAY,
     CONF_CLOUDY_POSITION,
+    CONF_CLOUDY_TILT,
     CONF_DAY_NIGHT_BLACKOUT_THRESHOLD,
     CONF_DAY_NIGHT_CONCURRENT_RAIL_TRAVEL,
     CONF_DAY_NIGHT_CONTROL_MODEL,
@@ -159,6 +161,8 @@ from .const import (
     CONF_SLIDING_POINT2_X,
     CONF_SLIDING_POINT2_Y,
     CONF_SLIDING_SLIDE_DIRECTION,
+    CONF_SNAP_CLOSED_BELOW,
+    CONF_SNAP_CLOSED_THRESHOLD,
     CONF_SOLAR_COVER_SHADE,
     CONF_SOLAR_COVER_SIDE,
     CONF_SOLAR_G_GLAZING,
@@ -177,6 +181,7 @@ from .const import (
     CONF_TILT_DEPTH,
     CONF_TILT_DISTANCE,
     CONF_TILT_HORIZONTAL_PERCENT,
+    CONF_TILT_MIN_REFLECTED_ELEVATION,
     CONF_TILT_MODE,
     CONF_TRANSIT_TIMEOUT,
     CONF_TRANSPARENT_BLIND,
@@ -231,6 +236,8 @@ from .const import (
     DEFAULT_TEMPLATE_COMBINE_MODE,
     DEFAULT_MOTION_TIMEOUT,
     DEFAULT_MOTION_TIMEOUT_MODE,
+    DEFAULT_SNAP_CLOSED_BELOW,
+    DEFAULT_SNAP_CLOSED_THRESHOLD,
     DEFAULT_SUNRISE_GATES_START,
     DEFAULT_TRANSIT_TIMEOUT_SECONDS,
     DEFAULT_WEATHER_OUTSIDE_WINDOW,
@@ -609,6 +616,23 @@ _SUN_TRACKING_SPECS = _spec(
         rng=const._RANGE_MAX_COVERAGE_STEPS,
         default=DEFAULT_MAX_COVERAGE_STEPS,
         make_selector=_number(minimum=1, maximum=10, step=1),
+    ),
+    # snap_closed_below / snap_closed_threshold: same L4-global-motion-constraint
+    # placement as minimize_movements / max_coverage_steps above (#1379).
+    FieldSpec(
+        CONF_SNAP_CLOSED_BELOW,
+        SECTION_AUTOMATION,
+        ValidatorKind.BOOL,
+        default=DEFAULT_SNAP_CLOSED_BELOW,
+        make_selector=_bool(),
+    ),
+    FieldSpec(
+        CONF_SNAP_CLOSED_THRESHOLD,
+        SECTION_AUTOMATION,
+        ValidatorKind.RANGE,
+        rng=const._RANGE_SNAP_CLOSED_THRESHOLD,
+        default=DEFAULT_SNAP_CLOSED_THRESHOLD,
+        make_selector=_number(minimum=1, maximum=50, step=1, unit="%"),
     ),
 )
 
@@ -1611,6 +1635,40 @@ _LIGHT_CLOUD_SPECS = _spec(
     FieldSpec(
         CONF_CLOUDY_POSITION, SECTION_LIGHT_CLOUD, ValidatorKind.NONE, clearable=True
     ),
+    # Slat angle while cloud suppression holds (#175). Venetian-only —
+    # surfaced via CoverTypePolicy.cloud_suppression_includes_tilt. Clearable
+    # with NO default: absent => None => the handler names no tilt and the
+    # slats are left alone, which is the pre-#175 behaviour (so no config
+    # migration). Carries make_selector (unlike its dynamic siblings in this
+    # section) because the generic extra_field_keys loop in cover_types/base.py
+    # skips specs without one. ValidatorKind.RANGE rather than the NONE its
+    # position sibling above carries: bounds validation on a percentage is
+    # worth having, and having it makes the ``set_light_cloud`` seat mandatory.
+    FieldSpec(
+        CONF_CLOUDY_TILT,
+        SECTION_LIGHT_CLOUD,
+        ValidatorKind.RANGE,
+        rng=const._RANGE_TILT,
+        clearable=True,
+        make_selector=_const(position_slider),
+    ),
+    # How long a cloudy hold may run before the cover opens fully (#175).
+    # NO ``default=``, deliberately NOT a copy of the ``default={"hours": 2}``
+    # the manual-override duration spec carries: that literal is already a
+    # duplicate of DEFAULT_MANUAL_OVERRIDE_DURATION, and here it would be
+    # worse than a duplicate — it would turn every existing install's first
+    # visit to this screen into an opt-in to a two-hour escalation nobody
+    # asked for. Clearable, so a blank field is stripped back to absent
+    # rather than stored as an all-zero duration. Unlike the slat angle above
+    # this carries no cover-type gate: "give up on the cloudy hold" means the
+    # same thing on every axis count.
+    FieldSpec(
+        CONF_CLOUD_ESCALATION_DELAY,
+        SECTION_LIGHT_CLOUD,
+        ValidatorKind.DURATION,
+        clearable=True,
+        make_selector=_const(selector.DurationSelector),
+    ),
     FieldSpec(
         CONF_WEATHER_ENTITY, SECTION_LIGHT_CLOUD, ValidatorKind.ENTITY, clearable=True
     ),
@@ -2193,6 +2251,12 @@ _GEOMETRY_SPECS = _spec(
         rng=const._RANGE_TILT_SAFETY_MARGIN,
     ),
     FieldSpec(
+        CONF_TILT_MIN_REFLECTED_ELEVATION,
+        SECTION_GEOMETRY,
+        ValidatorKind.RANGE,
+        rng=const._RANGE_TILT_MIN_REFLECTED_ELEVATION,
+    ),
+    FieldSpec(
         CONF_VENETIAN_POST_SETTLE_HOLD,
         SECTION_GEOMETRY,
         ValidatorKind.RANGE,
@@ -2543,6 +2607,7 @@ _POSITION_ROLES: dict[str, PositionRole] = {
     CONF_MIN_TILT: PositionRole.TILT,
     CONF_MAX_TILT: PositionRole.TILT,
     CONF_WEATHER_OVERRIDE_TILT: PositionRole.TILT,
+    CONF_CLOUDY_TILT: PositionRole.TILT,
     # ---- percentages that are not travel positions -----------------------
     # Magnitudes and hardware-frame thresholds. A type switch changes which end
     # of the axis shades the window; it does not renumber the axis, so a delta,
@@ -2559,6 +2624,11 @@ _POSITION_ROLES: dict[str, PositionRole] = {
     CONF_DAY_NIGHT_OPACITY_SHEER: PositionRole.NEUTRAL,
     CONF_DAY_NIGHT_OPACITY_BLACKOUT: PositionRole.NEUTRAL,
     CONF_DAY_NIGHT_BLACKOUT_THRESHOLD: PositionRole.NEUTRAL,
+    # Distance-to-closed-endpoint threshold (issue #1379): the snap already
+    # resolves which end is closed via full_coverage_at_zero, so the stored
+    # percentage means the same magnitude under either polarity — same
+    # reasoning as CONF_OPEN_CLOSE_THRESHOLD above.
+    CONF_SNAP_CLOSED_THRESHOLD: PositionRole.NEUTRAL,
     **_slot_roles(),
 }
 

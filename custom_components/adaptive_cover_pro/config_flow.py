@@ -45,9 +45,11 @@ from .const import (
     CONF_PROFILE_SENSOR_OVERRIDES,
     CONF_CLIMATE_MODE,
     CONF_CLIMATE_TEMP_HOLD_TIME,
+    CONF_CLOUD_ESCALATION_DELAY,
     CONF_CLOUD_SUPPRESSION,
     CONF_CLOUD_SUPPRESSION_HOLD_TIME,
     CONF_CLOUDY_POSITION,
+    CONF_CLOUDY_TILT,
     CONF_COMMAND_QUEUE,
     CONF_COMMAND_QUEUE_GAP,
     CONF_DAYTIME_GATE_SENSORS,
@@ -104,6 +106,8 @@ from .const import (
     DEFAULT_EXTREME_HEAT_POSITION,
     DEFAULT_MAX_COVERAGE_STEPS,
     DEFAULT_MINIMIZE_MOVEMENTS,
+    DEFAULT_SNAP_CLOSED_BELOW,
+    DEFAULT_SNAP_CLOSED_THRESHOLD,
     CONF_FOV_COMPUTE,
     CONF_FOV_LEFT,
     CONF_FOV_RIGHT,
@@ -143,6 +147,8 @@ from .const import (
     CONF_MIN_POSITION,
     CONF_MIN_POSITION_SUN_TRACKING,
     CONF_MINIMIZE_MOVEMENTS,
+    CONF_SNAP_CLOSED_BELOW,
+    CONF_SNAP_CLOSED_THRESHOLD,
     CONF_MODE,
     CONF_MOTION_MEDIA_PLAYERS,
     CONF_MOTION_SENSORS,
@@ -197,6 +203,7 @@ from .const import (
     CONF_TILT_DEPTH,
     CONF_TILT_DISTANCE,
     CONF_TILT_HORIZONTAL_PERCENT,
+    CONF_TILT_MIN_REFLECTED_ELEVATION,
     CONF_TILT_MODE,
     CONF_TILT_SAFETY_MARGIN,
     CONF_VENETIAN_TILT_TRANSFORM,
@@ -280,6 +287,7 @@ from .companion_card import (
     async_get_card_status,
 )
 from .engine.sun_geometry import computed_fov_line, fov_from_reveal
+from .state.device_link import devices_for_entities, resolve_linked_device
 from .i18n_bundle import flatten_bundle, load_bundle_overlay, merge_labels
 from .managers.cover_command.state_store import TravelCalibration
 from .troubleshoot_i18n import load_troubleshoot_labels
@@ -292,6 +300,9 @@ from .helpers import (
     custom_position_slot_configured,
     custom_position_slot_name,
     custom_position_slot_sensors,
+    duration_seconds_or_none,
+    format_duration,
+    has_configured_window_end,
     is_assumed_state,
     manual_hold_is_unanchored,
     mirror_legacy_slot_sensor_keys,
@@ -397,6 +408,7 @@ from .pipeline.handlers import (  # noqa: E402
     HANDLER_PRIORITY_CONF,
     resolve_handler_priority,
 )
+from .pipeline.helpers import SOLAR_TRACKING_FLOOR_PCT  # noqa: E402
 from .pipeline.types import CustomPositionSensorState, has_fixed_tilt  # noqa: E402
 from .priority_chain import build_priority_chain  # noqa: E402
 from .managers.cover_command.queue import normalize_queue_name  # noqa: E402
@@ -1040,6 +1052,20 @@ AUTOMATION_SCHEMA = vol.Schema(
                 mode=selector.NumberSelectorMode.SLIDER,
             )
         ),
+        vol.Optional(
+            CONF_SNAP_CLOSED_BELOW, default=DEFAULT_SNAP_CLOSED_BELOW
+        ): selector.BooleanSelector(),
+        vol.Optional(
+            CONF_SNAP_CLOSED_THRESHOLD, default=DEFAULT_SNAP_CLOSED_THRESHOLD
+        ): selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=1,
+                max=50,
+                step=1,
+                mode=selector.NumberSelectorMode.SLIDER,
+                unit_of_measurement="%",
+            )
+        ),
         vol.Optional(CONF_START_ENTITY): selector.EntitySelector(
             selector.EntitySelectorConfig(domain=["sensor", "input_datetime"])
         ),
@@ -1249,6 +1275,11 @@ LIGHT_CLOUD_SCHEMA = light_cloud_schema()
 # optional_entities() with this list before dict.update() -- see #323 and #392.
 _LIGHT_CLOUD_OPTIONAL_KEYS: list[str] = [
     CONF_CLOUDY_POSITION,
+    # Blank must mean absent, not an all-zero duration (#175) — otherwise the
+    # escalation can never be turned back off from the UI once configured.
+    # Unconditional, unlike the slat angle: this field renders for every cover
+    # type, so there is no form that could collect a stray null for it.
+    CONF_CLOUD_ESCALATION_DELAY,
     CONF_WEATHER_ENTITY,
     CONF_IS_SUNNY_SENSOR,
     CONF_IS_SUNNY_TEMPLATE,
@@ -1464,35 +1495,12 @@ def _stringify_templatable(suggested: dict) -> dict:
     return out
 
 
-def _format_duration(dur: dict | int | float | None) -> str:
-    """Format a DurationSelector value (dict or legacy int minutes) as human-readable text.
-
-    A DurationSelector stores ``{"hours": H, "minutes": M, "seconds": S}``.
-    Legacy configs may store a plain number (treated as minutes).
-    Zero-valued components are omitted unless all are zero (returns "0 min").
-    Examples:
-        {"hours": 5, "minutes": 0, "seconds": 0} -> "5 h"
-        {"hours": 2, "minutes": 15, "seconds": 0} -> "2 h 15 min"
-        {"hours": 0, "minutes": 30, "seconds": 0} -> "30 min"
-        {"hours": 0, "minutes": 0, "seconds": 45} -> "45 s"
-        120 (legacy int)                           -> "120 min"
-
-    """
-    if dur is None:
-        return ""
-    if isinstance(dur, int | float):
-        return f"{int(dur)} min"
-    h = int(dur.get("hours", 0) or 0)
-    m = int(dur.get("minutes", 0) or 0)
-    s = int(dur.get("seconds", 0) or 0)
-    parts = []
-    if h:
-        parts.append(f"{h} h")
-    if m:
-        parts.append(f"{m} min")
-    if s:
-        parts.append(f"{s} s")
-    return " ".join(parts) if parts else "0 min"
+# The duration formatter and the all-zero normaliser now live in ``helpers``
+# (issue #175) so ``building_overview`` and ``config_types`` can read a stored
+# duration without importing the config flow. Aliased under the old private
+# name because every call site in this module — and the unit tests that pin the
+# formatter's output — already reads it that way.
+_format_duration = format_duration
 
 
 def _build_cover_capabilities_text(
@@ -1847,15 +1855,28 @@ _SUMMARY_LABELS_EN: dict[str, str] = {
     "cloud.lux_release": "lux ≥ {release} lx",
     "cloud.irradiance_release": "irradiance ≥ {release} W/m²",
     "cloud.coverage_release": "cloud ≤ {release}%",
+    # Item fragments for the ignored-settings warning below (#175). The
+    # position sibling reuses ``cloud.fallback_cloudy`` rather than gaining a
+    # twin.
+    "cloud.ignored_tilt": "cloudy slat angle {tilt}%",
+    "cloud.ignored_escalation": "open-fully delay {delay}",
+    # Suffix on the rendered cloud line when a delay is configured (#175).
+    # Says what the cover DOES, not what the option is called, because the
+    # summary's job is to describe behaviour.
+    "cloud.escalation": " · opens fully after {delay}",
     "info.light_sensors_off": (
         "📊 Light sensors configured ({names}) but cloud suppression is off."
     ),
     "info.light_lux": "lux",
     "info.light_irradiance": "irradiance",
     "info.light_cloud_coverage": "cloud coverage",
-    "warnings.cloudy_pos_ignored": (
-        "⚠️ Cloudy position ({pos}%) configured but cloud suppression is "
-        "disabled — value will be ignored."
+    # One warning for every Light & Cloud target stranded by the master toggle
+    # (#175), replacing the single-key ``warnings.cloudy_pos_ignored``. The
+    # sentence leads with fixed text so ``{items}`` can carry one item or
+    # several without breaking sentence case. Adding a key to the list is a
+    # rendering change only — this string never changes again.
+    "warnings.cloud_settings_ignored": (
+        "⚠️ Cloud suppression is disabled, so {items} will be ignored."
     ),
     # --- Climate (50) ---
     "rules.climate": ("🌡️ Climate mode: adjusts strategy for heating/cooling{detail}"),
@@ -1912,6 +1933,11 @@ _SUMMARY_LABELS_EN: dict[str, str] = {
     "solar.minimize": (
         "{indent}🪟 Minimize movements — {detail}, rounding toward more "
         "coverage to reduce motor movements."
+    ),
+    "solar.snap_closed_below": (
+        "{indent}📎 Snap closed below {threshold}% — a sun-tracking demand "
+        "under {threshold}% (but above 0%) goes straight to fully closed "
+        "instead of leaving a barely-open sliver."
     ),
     "solar.gate_sensors": (
         "{indent}🚦 Sun tracking gate: {sensors} decide whether to sun-track."
@@ -2026,6 +2052,27 @@ _SUMMARY_LABELS_EN: dict[str, str] = {
         "⚠️ Sun-tracking min {sun_min}% < min position {min_pos}% — "
         "always-on floor dominates; sun-tracking floor will be raised to "
         "{min_pos}%."
+    ),
+    "warnings.snap_closed_below_conflicts_min_pos": (
+        "⚠️ Snap closed below {threshold}% + min position {min_pos}% — the "
+        "always-on floor already covers the entire snap band and will win, "
+        "so this setting can never take effect. Lower the min position below "
+        "{floor_bound}% or raise the threshold above {threshold_bound}% for "
+        "it to do anything."
+    ),
+    "warnings.snap_closed_below_conflicts_max_pos": (
+        "⚠️ Snap closed below {threshold}% + max position {max_pos}% — the "
+        "always-on ceiling already covers the entire snap band and will win, "
+        "so this setting can never take effect. Raise the max position above "
+        "{ceiling_bound}% or raise the threshold above {threshold_bound}% for "
+        "it to do anything."
+    ),
+    "warnings.snap_closed_below_floor_active": (
+        "⚠️ Snap closed below {threshold}% + a mixed cover group (some "
+        "support set_position, some are open/close-only) — the sun-tracking "
+        "floor stays active for the whole group (issue #569), so a demand it "
+        "collapses to closed settles at {floor_pct}% instead of a true 0% on "
+        "the position-capable cover(s)."
     ),
     "warnings.mode2_min_position": (
         "⚠️ Tilt MODE2 + min position {min_pos}% — in MODE2 the open "
@@ -2459,7 +2506,7 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
     # =========================================================================
     # Section 1c: Cover Capability Warnings
     # =========================================================================
-    _, cap_warnings = check_cover_capabilities(config, sensor_type, hass)
+    cap_map, cap_warnings = check_cover_capabilities(config, sensor_type, hass)
     if cap_warnings:
         lines.append("")
         lines.append(L["headers.cover_warnings"])
@@ -2979,6 +3026,32 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
         )
 
     # Cloud suppression (60)
+    #
+    # Resolved before the toggle branch because both the rendered cloud line
+    # and the ignored-settings warning below need the same value. Gated on the
+    # policy ClassVar, never on the cover-type string: a stored slat angle left
+    # behind by a cover-type switch (#1132 deletes nothing) or written by
+    # ``acp.set_light_cloud`` (no cover-type gate) must not promise slat
+    # movement to a cover with no slat axis — the #1297 rule, applied to #175.
+    cloudy_tilt_cfg = (
+        config.get(CONF_CLOUDY_TILT)
+        if sensor_type is not None
+        and get_policy(sensor_type).cloud_suppression_includes_tilt
+        else None
+    )
+    # Resolved here for the same reason: the cloud line and the warning below
+    # both need it (#175). NOT policy-gated — every cover type can be told to
+    # stop holding a cloudy position. ``duration_seconds_or_none`` is the same
+    # normaliser ``RuntimeConfig`` arms the feature with, so the summary can
+    # never claim an escalation the manager will not run: an all-zero duration
+    # is a blank field, and describing it as "opens fully after 0 min" would be
+    # a promise the code deliberately does not keep.
+    escalation_cfg = config.get(CONF_CLOUD_ESCALATION_DELAY)
+    escalation_delay_text = (
+        _format_duration(escalation_cfg)
+        if duration_seconds_or_none(escalation_cfg) is not None
+        else None
+    )
     if has_cloud:
         cloud_parts = []
         is_sunny_value = config.get(CONF_IS_SUNNY_SENSOR) or (
@@ -3035,6 +3108,18 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
         else:
             fallback_label = L["cloud.fallback_default"].format(default_pos=default_pos)
         cloud_line = L["rules.cloud"].format(cloud=cloud_str, fallback=fallback_label)
+        # The slat target, right beside the carriage target it accompanies
+        # (#175). Reuses ``custom.tilt_note`` — the same ", tilt {tilt}%"
+        # fragment the custom-position and weather lines use, because it says
+        # exactly the same thing about the same axis, so the three cannot
+        # drift and DE/FR gain nothing new to translate.
+        if cloudy_tilt_cfg is not None:
+            cloud_line += L["custom.tilt_note"].format(tilt=cloudy_tilt_cfg)
+        # Then when we give up on both of them (#175). Placed after the two
+        # targets it supersedes and before the smoothing suffixes, so the line
+        # reads in the order the behaviour happens.
+        if escalation_delay_text is not None:
+            cloud_line += L["cloud.escalation"].format(delay=escalation_delay_text)
         # Smoothing suffixes (issue #864): a non-zero hold-time and any
         # configured per-trigger hysteresis release edges.
         hold_time = config.get(CONF_CLOUD_SUPPRESSION_HOLD_TIME)
@@ -3090,13 +3175,30 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
             L["info.light_sensors_off"].format(names=", ".join(sensor_names)),
         )
 
-    # Warn if cloudy_position set but cloud suppression is disabled
-    cloudy_pos_cfg = config.get(CONF_CLOUDY_POSITION)
-    if cloudy_pos_cfg is not None and not has_cloud:
+    # Warn about every Light & Cloud target that only means something while
+    # suppression is on. ONE guard, ONE line, listing whichever are configured
+    # (#175) — a second and third ``if cfg is not None and not has_cloud``
+    # block would be three ⚠️ lines saying the same thing about the same
+    # disabled toggle. The guard, the join and the line are the shared policy;
+    # the table below is the only part that grows, so a fourth setting is a
+    # tuple rather than a block. ``is not None`` throughout: 0 % is a real
+    # answer on both axes (closed carriage, closed slats).
+    ignored_cloud_settings = [
+        L[label].format(**{placeholder: value})
+        for value, label, placeholder in (
+            (config.get(CONF_CLOUDY_POSITION), "cloud.fallback_cloudy", "pos"),
+            (cloudy_tilt_cfg, "cloud.ignored_tilt", "tilt"),
+            (escalation_delay_text, "cloud.ignored_escalation", "delay"),
+        )
+        if value is not None
+    ]
+    if ignored_cloud_settings and not has_cloud:
         _open_note(
             _prio["cloud_suppression"],
             _HID_ORDER_INDEX["cloud_suppression"],
-            L["warnings.cloudy_pos_ignored"].format(pos=cloudy_pos_cfg),
+            L["warnings.cloud_settings_ignored"].format(
+                items=", ".join(ignored_cloud_settings)
+            ),
         )
 
     # Climate mode (50)
@@ -3282,6 +3384,15 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
             else:
                 detail = L["solar.minimize_steps"].format(steps=steps)
             _sub(L["solar.minimize"].format(indent=indent, detail=detail))
+        if config.get(CONF_SNAP_CLOSED_BELOW, False):
+            snap_threshold = int(
+                config.get(CONF_SNAP_CLOSED_THRESHOLD, DEFAULT_SNAP_CLOSED_THRESHOLD)
+            )
+            _sub(
+                L["solar.snap_closed_below"].format(
+                    indent=_GATE_SUMMARY_INDENT, threshold=snap_threshold
+                )
+            )
         # Sun-tracking gate (issue #1167) — suppresses solar positioning while it
         # reads false, letting the chain fall through to the default position.
         # Only rendered under the enabled branch: with the master toggle off the
@@ -3320,7 +3431,14 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
     # (issue #1256), matching the start_time option's documented "leave
     # blank to start at sunrise". With no end bound either, the window stays
     # unbounded on both sides and this stays silent, as before.
-    end_bound_configured = bool(end_entity) or bool(end_time and end_time != BLANK_TIME)
+    #
+    # The summary twin of ``TimeWindowManager.has_configured_end``: this line
+    # renders the very condition that property gates at runtime, so both go
+    # through the one definition rather than each hand-rolling it (issue
+    # #1061). Three copies of this predicate had accumulated — #1044's helper,
+    # #1256's module-local one in the time-window manager, and this one — and
+    # they did not agree about the empty string.
+    end_bound_configured = has_configured_window_end(config)
     if start_entity:
         timing_parts.append(L["timing.from_entity"].format(entity=start_entity))
     elif start_time and start_time != BLANK_TIME:
@@ -3629,6 +3747,120 @@ def _build_config_summary(  # noqa: C901, PLR0912, PLR0915
             )
         )
 
+    # Footgun: the opposite-polarity clamp at/beyond the snap threshold makes
+    # the declutter snap completely inert (issue #1379). ``apply_config_limits``
+    # runs AFTER the snap and always wins (floor-wins-on-conflict — the same
+    # precedence ``clamp_to_bounds`` guarantees), so once that clamp already
+    # dominates the entire snap band, the setting can never change the
+    # outcome: a demand it collapses gets pulled straight back to the clamp,
+    # and a demand it leaves untouched was already going to land on that same
+    # clamp anyway.
+    #
+    # Derivation (audit round 2 — off-by-one on both branches). The snap band
+    # is INTEGER percentages, not a continuous interval, and that rounding is
+    # where the boundary actually sits:
+    #
+    #   * full_coverage_at_zero=True (blind/tilt/venetian): the snap targets
+    #     0. ``gap_to_closed_pct == percentage`` (``PositionConverter.
+    #     snap_closed_below_threshold``), so the band ``0 < gap < threshold``
+    #     is the integers ``{1, ..., threshold-1}``; its HIGHEST member is
+    #     ``threshold-1``, not ``threshold``. With the floor at *m*
+    #     (``min_pos_sun_tracking`` when set, else ``min_pos`` — it overrides
+    #     min_pos per ``PositionConverter.apply_limits``), snap-on gives
+    #     ``max(0, m) == m`` and snap-off gives ``max(P, m)`` for every band
+    #     member P; these agree for every P in the band iff
+    #     ``m >= max(band) == threshold-1``. ``m == 0`` is excluded — that is
+    #     ``apply_limits``'s own "no floor configured" case, never a clamp.
+    #   * full_coverage_at_zero=False (awning): the snap targets 100.
+    #     ``gap_to_closed_pct == 100-percentage``, so ``0 < gap < threshold``
+    #     is the integers ``{101-threshold, ..., 99}``; its LOWEST member is
+    #     ``101-threshold``, not ``100-threshold``. With the ceiling at
+    #     max_pos (no sun-tracking-only max exists), snap-on gives
+    #     ``min(100, max_pos) == max_pos`` and snap-off gives
+    #     ``min(P, max_pos)`` for every band member P; these agree for every
+    #     P iff ``max_pos <= min(band) == 101-threshold``. ``max_pos == 100``
+    #     is excluded — ``apply_config_limits`` never applies that ceiling at
+    #     all (it is the "no ceiling configured" sentinel).
+    #
+    #   Escaping either inert state needs the SAME kind of +1 correction: the
+    #   floor must clear ``threshold-1`` (so raising the threshold must clear
+    #   ``m+1``, not merely ``m``), and the ceiling must clear
+    #   ``101-threshold`` (so raising the threshold must clear
+    #   ``101-max_pos``, not ``100-max_pos``) — a bound phrased with the old,
+    #   un-adjusted arithmetic names a value that is STILL inert.
+    if config.get(CONF_SNAP_CLOSED_BELOW, False):
+        _snap_threshold = int(
+            config.get(CONF_SNAP_CLOSED_THRESHOLD, DEFAULT_SNAP_CLOSED_THRESHOLD)
+        )
+        # Reuses ``summary_policy`` (resolved once above, with the same
+        # unknown-type-falls-back-to-BlindPolicy guard the rest of the
+        # summary already relies on) rather than re-resolving the policy a
+        # second time here.
+        _snap_full_coverage_at_zero = not summary_policy.axes[0].open_blocks_sun
+        if _snap_full_coverage_at_zero:
+            _effective_min = (
+                min_pos_sun_track if min_pos_sun_track is not None else min_pos
+            )
+            if (
+                _effective_min is not None
+                and _effective_min != 0
+                and _effective_min >= _snap_threshold - 1
+            ):
+                lines.append(
+                    L["warnings.snap_closed_below_conflicts_min_pos"].format(
+                        threshold=_snap_threshold,
+                        min_pos=_effective_min,
+                        floor_bound=_snap_threshold - 1,
+                        threshold_bound=_effective_min + 1,
+                    )
+                )
+        elif (
+            max_pos is not None and max_pos != 100 and max_pos <= 101 - _snap_threshold
+        ):
+            lines.append(
+                L["warnings.snap_closed_below_conflicts_max_pos"].format(
+                    threshold=_snap_threshold,
+                    max_pos=max_pos,
+                    ceiling_bound=101 - _snap_threshold,
+                    threshold_bound=101 - max_pos,
+                )
+            )
+
+        # Footgun (round 1 OPTIONAL 5): the sun-tracking 1 % floor
+        # (``solar_floor`` / ``SOLAR_TRACKING_FLOOR_PCT``) is switched off only
+        # when EVERY bound entity supports the position axis (the conservative
+        # mixed-instance rule, issue #569 — see
+        # ``PipelineSnapshotBuilder.build``'s ``all_positionable`` rollup,
+        # which this mirrors). One open/close-only cover in an otherwise
+        # position-capable group keeps that floor active for the WHOLE group,
+        # so a demand the snap collapses to 0 is floored back up to
+        # ``SOLAR_TRACKING_FLOOR_PCT`` — silently, since only the live
+        # pipeline's per-entity capability data knows this, not the static
+        # config the rest of this function reads. Reuses ``cap_map`` —
+        # already resolved from ``hass`` above for the "Cover Warnings"
+        # section — rather than querying capabilities a second time.
+        # Only matters for the full_coverage_at_zero (closed-end-is-0) axes:
+        # an awning's snap target (100) is always far above the floor, so
+        # solar_floor is a no-op there regardless of floor_active.
+        # Irrelevant when every entity is open/close-only too (the group
+        # covered by cap_map): none of them would ever receive the literal
+        # numeric snap value in the first place, so the 1%-vs-0% distinction
+        # this warning exists for cannot apply to any of them.
+        if _snap_full_coverage_at_zero and cap_map:
+            _snap_has_positionable = any(
+                summary_policy.position_axis_supported(c) for c in cap_map.values()
+            )
+            _snap_has_non_positionable = any(
+                not summary_policy.position_axis_supported(c) for c in cap_map.values()
+            )
+            if _snap_has_positionable and _snap_has_non_positionable:
+                lines.append(
+                    L["warnings.snap_closed_below_floor_active"].format(
+                        threshold=_snap_threshold,
+                        floor_pct=SOLAR_TRACKING_FLOOR_PCT,
+                    )
+                )
+
     # MODE2 + min_position footgun warning (issue #373).
     # In MODE2 the OPEN (horizontal) slat angle IS 50%, so any min_position
     # >= 50% collapses every climate/glare-control decision to the floor and
@@ -3752,22 +3984,16 @@ def _render_priority_scale(config: dict, policy) -> str:
 async def _get_devices_from_entities(
     hass: HomeAssistant, entity_ids: list[str]
 ) -> dict[str, str]:
-    """Get devices associated with the given cover entity IDs."""
-    entity_reg = er.async_get(hass)
-    device_reg = dr.async_get(hass)
-    devices: dict[str, str] = {}
-    for entity_id in entity_ids:
-        entity_entry = entity_reg.async_get(entity_id)
-        if entity_entry and entity_entry.device_id:
-            device_entry = device_reg.async_get(entity_entry.device_id)
-            if device_entry and entity_entry.device_id not in devices:
-                name = (
-                    device_entry.name_by_user
-                    or device_entry.name
-                    or entity_entry.device_id
-                )
-                devices[entity_entry.device_id] = name
-    return devices
+    """Get ``{device_id: display name}`` for the devices behind the cover entities.
+
+    The entity → device hop itself belongs to ``state/device_link``, which needs
+    exactly the same walk to resolve a stored ``CONF_DEVICE_ID`` against the live
+    registry; this is only the naming layer on top of it.
+    """
+    return {
+        device_id: device.name_by_user or device.name or device_id
+        for device_id, device in devices_for_entities(hass, entity_ids).items()
+    }
 
 
 async def _get_device_name_for_entity(
@@ -3819,6 +4045,9 @@ SYNC_CATEGORIES: dict[str, frozenset[str]] = {
             CONF_MIN_TILT_SUN_ONLY,
             CONF_MAX_TILT_SUN_ONLY,
             CONF_TILT_SAFETY_MARGIN,
+            # The reflected-beam floor (#1282) is slat + room geometry, which is
+            # what a sibling window on the same facade shares.
+            CONF_TILT_MIN_REFLECTED_ELEVATION,
             CONF_VENETIAN_TILT_TRANSFORM,
             # Per-window aperture fields relocated from sun_tracking (#778). They
             # live on the geometry step and sync with the physical measurements.
@@ -3893,6 +4122,8 @@ SYNC_CATEGORIES: dict[str, frozenset[str]] = {
             CONF_DELTA_TIME,
             CONF_MINIMIZE_MOVEMENTS,
             CONF_MAX_COVERAGE_STEPS,
+            CONF_SNAP_CLOSED_BELOW,
+            CONF_SNAP_CLOSED_THRESHOLD,
             CONF_START_TIME,
             CONF_START_ENTITY,
             CONF_END_TIME,
@@ -4053,6 +4284,8 @@ SYNC_CATEGORIES: dict[str, frozenset[str]] = {
             CONF_IRRADIANCE_RELEASE_THRESHOLD,
             CONF_CLOUD_COVERAGE_RELEASE_THRESHOLD,
             CONF_CLOUDY_POSITION,
+            CONF_CLOUDY_TILT,
+            CONF_CLOUD_ESCALATION_DELAY,
             CONF_IS_SUNNY_TEMPLATE_MODE,
         }
     ),
@@ -4077,6 +4310,8 @@ SYNC_CATEGORIES: dict[str, frozenset[str]] = {
             CONF_IRRADIANCE_RELEASE_THRESHOLD,
             CONF_CLOUD_COVERAGE_RELEASE_THRESHOLD,
             CONF_CLOUDY_POSITION,
+            CONF_CLOUDY_TILT,
+            CONF_CLOUD_ESCALATION_DELAY,
             CONF_IS_SUNNY_SENSOR,
             CONF_IS_SUNNY_TEMPLATE,
             CONF_IS_SUNNY_TEMPLATE_MODE,
@@ -4153,6 +4388,8 @@ SYNC_CATEGORIES: dict[str, frozenset[str]] = {
             CONF_CLOUD_COVERAGE_THRESHOLD,
             CONF_CLOUD_SUPPRESSION,
             CONF_CLOUDY_POSITION,
+            CONF_CLOUDY_TILT,
+            CONF_CLOUD_ESCALATION_DELAY,
             CONF_IS_SUNNY_SENSOR,
             CONF_IS_SUNNY_TEMPLATE,
             CONF_IS_SUNNY_TEMPLATE_MODE,
@@ -5829,11 +6066,25 @@ class OptionsFlowHandler(OptionsFlow):
                 self.options.pop(CONF_DEVICE_ID, None)
             return await self.async_step_init()
 
-        current_device = self.options.get(CONF_DEVICE_ID) or _STANDALONE_SENTINEL
+        # Resolve the same way setup does (issue #1369): the stored id may name
+        # a composite HA has since split, which owns no entities and so is not
+        # in the option list above — the field would open blank and invite the
+        # user to "fix" a link that is already in force. Assigned, not
+        # ``setdefault``: ``self.options`` already carries the stale id, so a
+        # default would never be reached.
+        current_device = (
+            resolved.id
+            if (
+                resolved := resolve_linked_device(
+                    self.hass, self.options, own_entry_id=self._config_entry.entry_id
+                )
+            )
+            else self.options.get(CONF_DEVICE_ID)
+        ) or _STANDALONE_SENTINEL
         schema = _build_cover_entity_schema(self.sensor_type, devices=devices or None)
         suggested = dict(self.options)
         if devices:
-            suggested.setdefault(CONF_DEVICE_ID, current_device)
+            suggested[CONF_DEVICE_ID] = current_device
         return self.async_show_form(
             step_id="cover_entities",
             data_schema=self.add_suggested_values_to_schema(schema, suggested),
@@ -6307,14 +6558,26 @@ class OptionsFlowHandler(OptionsFlow):
 
     # ── Custom positions ────────────────────────────────────────────────
 
-    def _custom_position_include_tilt(self) -> bool:
-        """Whether this cover type carries per-slot / global tilt fields."""
+    def _section_adds_extra_fields(self, section: str) -> bool:
+        """Whether this cover type's policy adds any extra field to *section*.
+
+        The one gate behind every ``include_tilt`` kwarg the option steps pass
+        to their schema builder. Written once rather than mirrored per section:
+        the registry-membership guard (an unregistered ``sensor_type`` must
+        answer False rather than raise) and the ``extra_field_keys`` lookup are
+        the same policy in all three places, and only the section differs.
+        Reading ``extra_field_keys`` rather than each ``*_includes_tilt``
+        ClassVar keeps that one method the single seam that decides which
+        cover types surface a second axis in a given step.
+        """
         sensor_type = self.sensor_type
         return sensor_type in POLICY_REGISTRY and bool(
-            get_policy(sensor_type).extra_field_keys(
-                config_fields.SECTION_CUSTOM_POSITION
-            )
+            get_policy(sensor_type).extra_field_keys(section)
         )
+
+    def _custom_position_include_tilt(self) -> bool:
+        """Whether this cover type carries per-slot / global tilt fields."""
+        return self._section_adds_extra_fields(config_fields.SECTION_CUSTOM_POSITION)
 
     async def async_step_custom_position(
         self, user_input: dict[str, Any] | None = None
@@ -6677,11 +6940,7 @@ class OptionsFlowHandler(OptionsFlow):
 
     def _weather_override_include_tilt(self) -> bool:
         """Whether this cover type carries a weather-override tilt slider."""
-        sensor_type = self.sensor_type
-        return (
-            sensor_type in POLICY_REGISTRY
-            and get_policy(sensor_type).weather_override_includes_tilt
-        )
+        return self._section_adds_extra_fields(config_fields.SECTION_WEATHER_OVERRIDE)
 
     async def async_step_weather_override(
         self, user_input: dict[str, Any] | None = None
@@ -7547,17 +7806,33 @@ class OptionsFlowHandler(OptionsFlow):
             },
         )
 
+    def _light_cloud_include_tilt(self) -> bool:
+        """Whether this cover type carries a cloudy slat-angle slider (#175)."""
+        return self._section_adds_extra_fields(config_fields.SECTION_LIGHT_CLOUD)
+
     async def async_step_light_cloud(self, user_input: dict[str, Any] | None = None):
         """Manage light sensors, weather conditions, and cloud suppression."""
         suggested = _stringify_templatable(user_input or self.options)
+        include_tilt = self._light_cloud_include_tilt()
         if user_input is not None:
-            self.optional_entities(_LIGHT_CLOUD_OPTIONAL_KEYS, user_input)
+            # The cloudy slat angle joins the optional-keys list only when it
+            # was rendered — otherwise a single-axis cover would collect a
+            # stray null for a field its form never showed (#175). Without it
+            # in the list a cleared slider silently keeps its previous value,
+            # which is the #323/#377 defect class.
+            optional_keys = (
+                [*_LIGHT_CLOUD_OPTIONAL_KEYS, CONF_CLOUDY_TILT]
+                if include_tilt
+                else _LIGHT_CLOUD_OPTIONAL_KEYS
+            )
+            self.optional_entities(optional_keys, user_input)
             self.options.update(user_input)
             return await self.async_step_init()
         return self.async_show_form(
             step_id="light_cloud",
             data_schema=self.add_suggested_values_to_schema(
-                light_cloud_schema(self.hass, suggested), suggested
+                light_cloud_schema(self.hass, suggested, include_tilt=include_tilt),
+                suggested,
             ),
             description_placeholders={
                 "learn_more": "https://github.com/jrhubott/adaptive-cover-pro/wiki/How-It-Decides",

@@ -36,6 +36,20 @@
     "day_night_middle_rail_unset": {
       "title": "Tag/Nacht-Mittelschiene nicht ausgewählt",
       "description": "**{name}** ist als zweigeteiltes Tag/Nacht-Rollo konfiguriert, aber seine Mittelschienen-Beschattung ist nicht ausgewählt – oder verweist auf eine Beschattung, die nicht in der Beschattungsliste dieser Instanz enthalten ist. Beide Schienen erhalten dieselbe Position, daher verhält sich das Rollo wie eine normale Jalousie und die Mischung aus transparent und Verdunkelung wird nie angewendet. Wählen Sie die Mittelschienen-Beschattung in den Optionen der Beschattung aus, und stellen Sie sicher, dass sie auch als eine der gesteuerten Beschattungen aufgeführt ist."
+    },
+    "duplicate_device": {
+      "title": "Altgerät aus einer früheren Version",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Altgerät entfernen",
+            "description": "Das Gerät **{device_name}** gehört zu **{name}**, enthält aber keine seiner Entitäten mehr. Ältere Versionen von Adaptive Cover Pro hinterließen diesen Datensatz, als sie eine Beschattung mit ihrem physischen Gerät verknüpften; **{name}** hat jetzt sein eigenes Gerät, und alles wurde bereits dorthin verschoben. Das Entfernen von **{device_name}** löscht nur den leeren Datensatz – keine Entität, Automatisierung oder Dashboard-Karte ist betroffen. Falls sich doch etwas noch daran angehängt hat, wird dieser Vorgang unterbrochen und informiert Sie, anstatt etwas zu entfernen."
+          }
+        },
+        "abort": {
+          "device_in_use": "Das Gerät wurde nicht entfernt: Es entspricht nicht mehr dem, was diese Reparatur erwartet hat. Entweder wurde es bereits gelöscht, es enthält jetzt Entitäten, oder es gehört zu einer anderen Integration. Es wurde nichts geändert. Laden Sie Adaptive Cover Pro neu, um es erneut zu prüfen, und diese Warnung wird automatisch gelöscht, sobald das Altgerät weg ist."
+        }
+      }
     }
   },
   "config": {
@@ -140,7 +154,8 @@
           "day_night_concurrent_rail_travel": "Schienen gemeinsam bewegen (Dual-Entity-Modell)",
           "day_night_external_command_interlock": "Nicht erreichbare Schienenbefehle korrigieren (Dual-Entity-Modell)",
           "tilt_horizontal_percent": "Neigungsprozentsatz bei horizontal",
-          "venetian_tilt_only_scope": "Nur-Neigung-Umfang"
+          "venetian_tilt_only_scope": "Nur-Neigung-Umfang",
+          "tilt_min_reflected_elevation": "Minimaler Winkel der reflektierten Sonne"
         },
         "data_description": {
           "window_height": "Höhe Ihres Fensters (von unten bis oben des Glasbereichs). In der von Home Assistant konfigurierten Einheit angezeigt. Beispiele: Standard-Tür = 2,0 m / 79 in, Kleines Fenster = 1,5 m / 59 in, Vom Boden bis zur Decke = 2,5 m / 98 in. Messen Sie von dort, wo die Beschattung beginnt, bis dort, wo sie endet, wenn sie vollständig ausgefahren ist.",
@@ -206,7 +221,8 @@
           "day_night_concurrent_rail_travel": "Nur für das Modell **Zwei Schienen-Entitäten**: ob die beiden Schienen gleichzeitig fahren dürfen. **Aus (Standard, empfohlen):** Die nachfolgende Schiene wartet, bis die führende Schiene ihr Ziel vollständig freigegeben hat, bevor sie sich überhaupt bewegt. Langsamer — die Beschattung braucht zwei Fahrtdauern statt eine — aber immer korrekt, weil sie auf einer tatsächlich gelesenen Position handelt statt auf einer Vermutung, dass ein Motor gestartet ist. **An:** Die nachfolgende Schiene beginnt, sobald die führende Schiene bestätigt unterwegs ist und vor ihr liegt, damit die Beschattung ihre Position in einer Fahrtdauer erreicht. ⚠️ **Nur für erfahrene Benutzer — diese Einstellung ist die Ursache der meisten gemeldeten Doppelschienen-Probleme.** Die Bestätigung, dass die führende Schiene gestartet hat, setzt voraus, dass Ihre Motoren einen `opening`/`closing` Zustand oder Zwischenpositionen veröffentlichen, während sie fahren. Viele tun das nicht: einige melden überhaupt nichts zwischen dem Befehl und der Ankunft, was Adaptive Cover Pro zwingt, eine Bewegung zu vermuten, die es nicht sieht. Wenn diese Vermutung falsch ist, wird die nachfolgende Schiene in eine Schiene freigegeben, die sich nicht bewegt hat, was einen Motor blockieren, seinen Überstrom-Schutz auslösen oder seine Kalibrierung verlieren kann. Aktivieren Sie dies nur, wenn Sie Ihre Schienen beobachten können und bestätigen können, dass sie während der gesamten Bewegung ihren Abstand einhalten.",
           "day_night_external_command_interlock": "Nur für das Modell **Zwei Schienen-Entitäten**: was passiert, wenn ein Befehl versucht, eine Schiene in den Bereich zu fahren, den die andere Schiene besetzt. Zwei Arten von Befehlen landen dort. Ein Befehl, der **direkt an eine Schienen-Entität gesendet wird** — von einem Dashboard, einem Skript oder einer Handfernbedienung — läuft nie über Adaptive Cover Pro, also wird nichts sequenziert und der Motor verweigert ihn entweder oder bleibt auf halbem Weg stecken. Ein Befehl, der **über Adaptive Cover Pro gesendet wird** — der Schieber der Karte pro Schiene, die `set_position` / `set_axes` Dienste, die optionale Proxy-Beschattung, die My-Position-Taste — wird stattdessen von der Schienen-Freigabe-Prüfung zurückgehalten, was sicher ist, aber bedeutet, dass sich nichts bewegt. **An** (Standard): Die blockierende Schiene wird zuerst aus dem Weg gefahren und Ihr Befehl wird dann erneut gesendet, damit er tatsächlich ausgeführt wird; danach aktivieren beide Schienen die manuelle Übersteuerung. ⚠️ Das bedeutet, dass Adaptive Cover Pro möglicherweise die Schiene bewegt, die Sie nicht angesteuert haben. **Aus**: Der Befehl bleibt genau so, wie er gesendet wurde — er erreicht möglicherweise einfach sein Ziel nicht oder geschieht gar nicht — und eine Warnung wird protokolliert. Die automatische Sonnennachführung braucht dies nie: Sie berechnet beide Schienen aus einer Position und bewegt sie zusammen, also fragt sie nie nach einem Ort, den eine Schiene nicht erreichen kann.",
           "tilt_horizontal_percent": "Optionaler dritter Kalibrierungspunkt für Winkel angeben: der Neigungsprozentsatz, den die Beschattung anzeigt, wenn die Lamellen genau horizontal (90°) sind. 0 = deaktiviert, sodass die Skala direkt vom 0%-Winkel zum 100%-Winkel läuft. Stellen Sie ihn ein, wenn die Lamellen irgendwo anders als in der Mitte ihres gemeldeten Verfahrens horizontal erreicht werden – die Skala verwendet dann zwei gerade Segmente, die an diesem Punkt zusammentreffen, z. B. 0° bei 0%, horizontal bei 50% und 130° bei 100%. Erfordert, dass die 0%- und 100%-Winkel auf gegenüberliegenden Seiten von 90° liegen. Wird nur verwendet, wenn der Neigungsmodus auf Winkel angeben gesetzt ist.",
-          "venetian_tilt_only_scope": "Für welche Entscheidungen der Modus „Nur Neigung\" den Behang geschlossen hält. Wird nur verwendet, wenn der Betriebsmodus **Nur Neigung** ist. **Alle automatischen Entscheidungen** (Standard): Die Jalousie wird bei jeder automatischen Entscheidung geschlossen gehalten (0 %) — Sonnenverfolgung, Wolkenunterdrückung und Klima — so wie der Modus „Nur Neigung\" schon immer funktioniert hat. **Nur Sonnenverfolgung**: Die Jalousie wird nur dann geschlossen gehalten, wenn die Sonnenverfolgung gewinnt; Wolkenunterdrückungs- und Klimaentscheidungen (Sommer / Winter / extreme Hitze) bewegen den Behang normal. Wählen Sie dies, wenn eine Jalousie im reinen Neigungsbetrieb eine Tür oder einen Gehweg bedeckt, die an bewölkten Tagen nicht blockiert bleiben darf. Hinweis: Bei einem Wolkenunterdrückungsgewinn hebt sich der Behang, aber die Lamellen behalten ihren letzten Winkel bei — Wolkenunterdrückung sendet keinen Neigungsbefehl. Manuelle Entscheidungen, benutzerdefinierte Positionen, Wetter, Bewegung und Entscheidungen außerhalb des Zeitfensters bewegen den Behang bereits unter beiden Einstellungen."
+          "venetian_tilt_only_scope": "Für welche Entscheidungen der Modus „Nur Neigung\" den Behang geschlossen hält. Wird nur verwendet, wenn der Betriebsmodus **Nur Neigung** ist. **Alle automatischen Entscheidungen** (Standard): Die Jalousie wird bei jeder automatischen Entscheidung geschlossen gehalten (0 %) — Sonnenverfolgung, Wolkenunterdrückung und Klima — so wie der Modus „Nur Neigung\" schon immer funktioniert hat. **Nur Sonnenverfolgung**: Die Jalousie wird nur dann geschlossen gehalten, wenn die Sonnenverfolgung gewinnt; Wolkenunterdrückungs- und Klimaentscheidungen (Sommer / Winter / extreme Hitze) bewegen den Behang normal. Wählen Sie dies, wenn eine Jalousie im reinen Neigungsbetrieb eine Tür oder einen Gehweg bedeckt, die an bewölkten Tagen nicht blockiert bleiben darf. Hinweis: Bei einem Wolkenunterdrückungsgewinn hebt sich der Behang, aber die Lamellen behalten ihren letzten Winkel bei — Wolkenunterdrückung sendet keinen Neigungsbefehl. Manuelle Entscheidungen, benutzerdefinierte Positionen, Wetter, Bewegung und Entscheidungen außerhalb des Zeitfensters bewegen den Behang bereits unter beiden Einstellungen.",
+          "tilt_min_reflected_elevation": "Verhindert, dass von der Oberseite der Lamellen reflektiertes Sonnenlicht in den Raum scheint. Wenn die Sonne hoch steht, neigt sich die Lamelle optimal für Tageslicht so, dass die Oberseite nach oben zeigt, und die Lamellen werden zu einem Spiegel, der auf den Raum gerichtet ist — besonders auffällig bei raumhohen Fenstern. Legen Sie den niedrigsten Winkel über der Horizontalen fest, den der reflektierte Strahl verlassen darf, in Grad: Die Lamellen werden gerade so weit zurück zur Horizontalen (oder darüber hinaus) geneigt, um diesen Winkel zu erreichen, und niemals über den Grenzwinkel des direkten Sonnenlichts hinaus geöffnet. 0 = deaktiviert (Standard). Um einen Wert auszuwählen, nehmen Sie den nächsten Ort, an dem sich jemand hinsetzt oder hinstellt, und teilen Sie die Augenhöhe über der Fensterbank durch die Entfernung vom Glas: 1,2 m bei 2 m ≈ 31°, 1,7 m bei 1 m ≈ 60°. Beginnen Sie bei etwa 30° und erhöhen Sie den Wert, wenn Reflexionen immer noch Augenhöhe erreichen. Die Minimale Lamellenneigung wird danach angewendet und kann die Lamellen über dieser Obergrenze wieder öffnen — halten Sie diesen Wert niedrig, sonst kommt die Reflexion zurück."
         }
       },
       "duplicate_select": {
@@ -369,7 +385,9 @@
           "end_entity": "Entität, die die Endzeit angibt",
           "max_coverage_steps": "Maximale Abdeckungsschritte",
           "minimize_movements": "Bewegungen minimieren",
-          "command_queue": "Befehlswarteschlange"
+          "command_queue": "Befehlswarteschlange",
+          "snap_closed_below": "Unter Schwelle schließen",
+          "snap_closed_threshold": "Schwelle zum Schließen"
         },
         "data_description": {
           "delta_position": "Minimale Positionsänderung (%) erforderlich, bevor die Beschattung angepasst wird. Verhindert winzige Anpassungen, wenn die Sonne langsam wandert. Typische Werte: 1-2 % (sehr reaktiv, kann häufig angepasst werden), 5 % (ausgewogen, für die meisten empfohlen), 10 % (weniger häufig, größere Bewegungen). Beispiel: Wenn die Beschattung bei 30 % liegt und die Sonne sich leicht bewegt, passen Sie nur an, wenn die neue Position 35 % oder mehr beträgt (mit 5 % Schwellenwert). Reduziert Motorverschleiß und Geräusche durch ständige winzige Anpassungen.",
@@ -380,7 +398,9 @@
           "end_entity": "Entity, die den Endzeitstatus darstellt und die oben festgelegte feste Endzeit außer Kraft setzt. Nützlich zur Automatisierung der Endzeit mit einer Entity (z. B. Sensor, der die Schlafenszeit basierend auf Kalender oder täglicher Routine bereitstellt).",
           "max_coverage_steps": "Die maximale Anzahl der zu berücksichtigenden Schritte (z. B. 5 Schritte = 20% je Schritt). Mehr Schritte bedeuten glattere Bewegungen, aber häufigere Befehle und möglicherweise langsamere Reaktionen. Weniger Schritte reduzieren die Motorverschleiß, aber die Bewegung erscheint weniger flüssig.",
           "minimize_movements": "Reduzieren Sie die Häufigkeit der Positionsänderung der Beschattung beim Sonnenverfolgen durch Einrasten auf wenige feste Abdeckungsebenen statt kontinuierlicher Sonnenverfolgung. Rundet zu MEHR Abdeckung, damit direkte Sonnenstrahlung niemals durch Rundung eindringt. Tauscht etwas Tageslicht gegen weit weniger Motorbewegungen ein. Standard: aus.",
-          "command_queue": "Serialisieren Sie die Befehle dieser Beschattung gegen andere Beschattungen, die derselben Warteschlange zugewiesen sind. Beschattungen, die eine Warteschlange teilen, senden nie gleichzeitig - nützlich für One-Way-Radio-Backends (Somfy RTS, RFXtrx), bei denen gleichzeitige Befehle kollidieren und verloren gehen. Der Abstand zwischen Befehlen wird im Eintrag \"Befehlswarteschlange\" mit demselben Namen festgelegt oder standardmäßig auf 5 Sekunden eingestellt, falls keine vorhanden ist. Leer lassen für keine Warteschlange (Standard)."
+          "command_queue": "Serialisieren Sie die Befehle dieser Beschattung gegen andere Beschattungen, die derselben Warteschlange zugewiesen sind. Beschattungen, die eine Warteschlange teilen, senden nie gleichzeitig - nützlich für One-Way-Radio-Backends (Somfy RTS, RFXtrx), bei denen gleichzeitige Befehle kollidieren und verloren gehen. Der Abstand zwischen Befehlen wird im Eintrag \"Befehlswarteschlange\" mit demselben Namen festgelegt oder standardmäßig auf 5 Sekunden eingestellt, falls keine vorhanden ist. Leer lassen für keine Warteschlange (Standard).",
+          "snap_closed_below": "Wenn eine sonnenverfolgernde Position kaum offen ist (eine kleine Nicht-Null-Anforderung unter der unten eingestellten Schwelle), schließen Sie die Beschattung vollständig, anstatt einen kaum sichtbaren Lichtspalt offen zu lassen. Betrifft nur sonnenverfolgernde Positionen; eine aktive Mindestposition hat immer Vorrang vor dieser Einstellung. Standard: aus.",
+          "snap_closed_threshold": "Wie nah an der vollständigen Schließung (%) eine Sonnenverfolgungsanforderung sein muss, damit 'Unter Schwelle schließen' sie den Rest des Weges bis zum geschlossenen Endpunkt zieht (1-50). Gilt nur, solange noch ein Spalt zu schließen ist — eine bereits geschlossene Position bleibt unverändert. Standard: 10%."
         }
       },
       "cover_entities": {
@@ -464,7 +484,8 @@
           "day_night_concurrent_rail_travel": "Schienen gemeinsam bewegen (Dual-Entity-Modell)",
           "day_night_external_command_interlock": "Nicht erreichbare Schienenbefehle korrigieren (Dual-Entity-Modell)",
           "tilt_horizontal_percent": "Neigungsprozentsatz bei horizontal",
-          "venetian_tilt_only_scope": "Nur-Neigung-Umfang"
+          "venetian_tilt_only_scope": "Nur-Neigung-Umfang",
+          "tilt_min_reflected_elevation": "Minimaler Winkel der reflektierten Sonne"
         },
         "data_description": {
           "window_height": "Höhe Ihres Fensters (von unten bis oben des Glasbereichs). In der von Home Assistant konfigurierten Einheit angezeigt. Beispiele: Standard-Tür = 2,0 m / 79 in, Kleines Fenster = 1,5 m / 59 in, Vom Boden bis zur Decke = 2,5 m / 98 in. Messen Sie von dort, wo die Beschattung beginnt, bis dort, wo sie endet, wenn sie vollständig ausgefahren ist.",
@@ -530,7 +551,8 @@
           "day_night_concurrent_rail_travel": "Nur für das Modell **Zwei Schienen-Entitäten**: ob die beiden Schienen gleichzeitig fahren dürfen. **Aus (Standard, empfohlen):** Die nachfolgende Schiene wartet, bis die führende Schiene ihr Ziel vollständig freigegeben hat, bevor sie sich überhaupt bewegt. Langsamer — die Beschattung braucht zwei Fahrtdauern statt eine — aber immer korrekt, weil sie auf einer tatsächlich gelesenen Position handelt statt auf einer Vermutung, dass ein Motor gestartet ist. **An:** Die nachfolgende Schiene beginnt, sobald die führende Schiene bestätigt unterwegs ist und vor ihr liegt, damit die Beschattung ihre Position in einer Fahrtdauer erreicht. ⚠️ **Nur für erfahrene Benutzer — diese Einstellung ist die Ursache der meisten gemeldeten Doppelschienen-Probleme.** Die Bestätigung, dass die führende Schiene gestartet hat, setzt voraus, dass Ihre Motoren einen `opening`/`closing` Zustand oder Zwischenpositionen veröffentlichen, während sie fahren. Viele tun das nicht: einige melden überhaupt nichts zwischen dem Befehl und der Ankunft, was Adaptive Cover Pro zwingt, eine Bewegung zu vermuten, die es nicht sieht. Wenn diese Vermutung falsch ist, wird die nachfolgende Schiene in eine Schiene freigegeben, die sich nicht bewegt hat, was einen Motor blockieren, seinen Überstrom-Schutz auslösen oder seine Kalibrierung verlieren kann. Aktivieren Sie dies nur, wenn Sie Ihre Schienen beobachten können und bestätigen können, dass sie während der gesamten Bewegung ihren Abstand einhalten.",
           "day_night_external_command_interlock": "Nur für das Modell **Zwei Schienen-Entitäten**: was passiert, wenn ein Befehl versucht, eine Schiene in den Bereich zu fahren, den die andere Schiene besetzt. Zwei Arten von Befehlen landen dort. Ein Befehl, der **direkt an eine Schienen-Entität gesendet wird** — von einem Dashboard, einem Skript oder einer Handfernbedienung — läuft nie über Adaptive Cover Pro, also wird nichts sequenziert und der Motor verweigert ihn entweder oder bleibt auf halbem Weg stecken. Ein Befehl, der **über Adaptive Cover Pro gesendet wird** — der Schieber der Karte pro Schiene, die `set_position` / `set_axes` Dienste, die optionale Proxy-Beschattung, die My-Position-Taste — wird stattdessen von der Schienen-Freigabe-Prüfung zurückgehalten, was sicher ist, aber bedeutet, dass sich nichts bewegt. **An** (Standard): Die blockierende Schiene wird zuerst aus dem Weg gefahren und Ihr Befehl wird dann erneut gesendet, damit er tatsächlich ausgeführt wird; danach aktivieren beide Schienen die manuelle Übersteuerung. ⚠️ Das bedeutet, dass Adaptive Cover Pro möglicherweise die Schiene bewegt, die Sie nicht angesteuert haben. **Aus**: Der Befehl bleibt genau so, wie er gesendet wurde — er erreicht möglicherweise einfach sein Ziel nicht oder geschieht gar nicht — und eine Warnung wird protokolliert. Die automatische Sonnennachführung braucht dies nie: Sie berechnet beide Schienen aus einer Position und bewegt sie zusammen, also fragt sie nie nach einem Ort, den eine Schiene nicht erreichen kann.",
           "tilt_horizontal_percent": "Optionaler dritter Kalibrierungspunkt für Winkel angeben: der Neigungsprozentsatz, den die Beschattung anzeigt, wenn die Lamellen genau horizontal (90°) sind. 0 = deaktiviert, sodass die Skala direkt vom 0%-Winkel zum 100%-Winkel läuft. Stellen Sie ihn ein, wenn die Lamellen irgendwo anders als in der Mitte ihres gemeldeten Verfahrens horizontal erreicht werden – die Skala verwendet dann zwei gerade Segmente, die an diesem Punkt zusammentreffen, z. B. 0° bei 0%, horizontal bei 50% und 130° bei 100%. Erfordert, dass die 0%- und 100%-Winkel auf gegenüberliegenden Seiten von 90° liegen. Wird nur verwendet, wenn der Neigungsmodus auf Winkel angeben gesetzt ist.",
-          "venetian_tilt_only_scope": "Für welche Entscheidungen der Modus „Nur Neigung\" den Behang geschlossen hält. Wird nur verwendet, wenn der Betriebsmodus **Nur Neigung** ist. **Alle automatischen Entscheidungen** (Standard): Die Jalousie wird bei jeder automatischen Entscheidung geschlossen gehalten (0 %) — Sonnenverfolgung, Wolkenunterdrückung und Klima — so wie der Modus „Nur Neigung\" schon immer funktioniert hat. **Nur Sonnenverfolgung**: Die Jalousie wird nur dann geschlossen gehalten, wenn die Sonnenverfolgung gewinnt; Wolkenunterdrückungs- und Klimaentscheidungen (Sommer / Winter / extreme Hitze) bewegen den Behang normal. Wählen Sie dies, wenn eine Jalousie im reinen Neigungsbetrieb eine Tür oder einen Gehweg bedeckt, die an bewölkten Tagen nicht blockiert bleiben darf. Hinweis: Bei einem Wolkenunterdrückungsgewinn hebt sich der Behang, aber die Lamellen behalten ihren letzten Winkel bei — Wolkenunterdrückung sendet keinen Neigungsbefehl. Manuelle Entscheidungen, benutzerdefinierte Positionen, Wetter, Bewegung und Entscheidungen außerhalb des Zeitfensters bewegen den Behang bereits unter beiden Einstellungen."
+          "venetian_tilt_only_scope": "Für welche Entscheidungen der Modus „Nur Neigung\" den Behang geschlossen hält. Wird nur verwendet, wenn der Betriebsmodus **Nur Neigung** ist. **Alle automatischen Entscheidungen** (Standard): Die Jalousie wird bei jeder automatischen Entscheidung geschlossen gehalten (0 %) — Sonnenverfolgung, Wolkenunterdrückung und Klima — so wie der Modus „Nur Neigung\" schon immer funktioniert hat. **Nur Sonnenverfolgung**: Die Jalousie wird nur dann geschlossen gehalten, wenn die Sonnenverfolgung gewinnt; Wolkenunterdrückungs- und Klimaentscheidungen (Sommer / Winter / extreme Hitze) bewegen den Behang normal. Wählen Sie dies, wenn eine Jalousie im reinen Neigungsbetrieb eine Tür oder einen Gehweg bedeckt, die an bewölkten Tagen nicht blockiert bleiben darf. Hinweis: Bei einem Wolkenunterdrückungsgewinn hebt sich der Behang, aber die Lamellen behalten ihren letzten Winkel bei — Wolkenunterdrückung sendet keinen Neigungsbefehl. Manuelle Entscheidungen, benutzerdefinierte Positionen, Wetter, Bewegung und Entscheidungen außerhalb des Zeitfensters bewegen den Behang bereits unter beiden Einstellungen.",
+          "tilt_min_reflected_elevation": "Verhindert, dass von der Oberseite der Lamellen reflektiertes Sonnenlicht in den Raum scheint. Wenn die Sonne hoch steht, neigt sich die Lamelle optimal für Tageslicht so, dass die Oberseite nach oben zeigt, und die Lamellen werden zu einem Spiegel, der auf den Raum gerichtet ist — besonders auffällig bei raumhohen Fenstern. Legen Sie den niedrigsten Winkel über der Horizontalen fest, den der reflektierte Strahl verlassen darf, in Grad: Die Lamellen werden gerade so weit zurück zur Horizontalen (oder darüber hinaus) geneigt, um diesen Winkel zu erreichen, und niemals über den Grenzwinkel des direkten Sonnenlichts hinaus geöffnet. 0 = deaktiviert (Standard). Um einen Wert auszuwählen, nehmen Sie den nächsten Ort, an dem sich jemand hinsetzt oder hinstellt, und teilen Sie die Augenhöhe über der Fensterbank durch die Entfernung vom Glas: 1,2 m bei 2 m ≈ 31°, 1,7 m bei 1 m ≈ 60°. Beginnen Sie bei etwa 30° und erhöhen Sie den Wert, wenn Reflexionen immer noch Augenhöhe erreichen. Die Minimale Lamellenneigung wird danach angewendet und kann die Lamellen über dieser Obergrenze wieder öffnen — halten Sie diesen Wert niedrig, sonst kommt die Reflexion zurück."
         }
       },
       "sun_tracking": {
@@ -807,13 +829,15 @@
           "cloud_suppression": "Wolkenunterdrückung aktivieren (Hauptschalter)",
           "weather_state": "Wetterbedingungen",
           "cloudy_position": "Bewölkungsposition (optional)",
+          "cloudy_tilt": "Bewölkter Lamellenwinkel (optional)",
           "is_sunny_sensor": "Binärsensor \"Sonne scheint\" (optional)",
           "is_sunny_template": "Vorlage \"Is Sunny\" (optional)",
           "is_sunny_template_mode": "Logik der Vorlage \"Is Sunny\"",
           "lux_release_threshold": "Lux-Freigabe-Schwellenwert (optional)",
           "irradiance_release_threshold": "Bestrahlungsstärke-Freigabe-Schwellenwert (optional)",
           "cloud_coverage_release_threshold": "Bewölkungs-Freigabe-Schwellenwert (optional)",
-          "cloud_suppression_hold_time": "Glättungs-Haltezeit"
+          "cloud_suppression_hold_time": "Glättungs-Haltezeit",
+          "cloud_escalation_delay": "Vollständig öffnen nach (optional)"
         },
         "data_description": {
           "weather_entity": "Optionale Wetterintegration zum Erkennen der Wolkenbedeckung. Wenn der aktuelle Wetterzustand nicht in der unten ausgewählten Liste vorhanden ist, wird angenommen, dass direktes Sonnenlicht fehlt und die Blendungskontrolle wird unterdrückt. Lassen Sie diesen Bereich leer, um den Wetterzustand zu ignorieren.",
@@ -827,13 +851,15 @@
           "cloud_coverage_threshold": "Wolkenbedeckung in Prozent, ab der die Blendschutzregelung unterdrückt wird. Beispiel: 75 bedeutet, dass die Beschattung die Sonnennachführung stoppt, wenn der Himmel zu 75 % oder mehr bedeckt ist. Akzeptiert eine feste Zahl oder eine Home Assistant Jinja2-Vorlage, die eine Zahl ergibt und bei jedem Update neu bewertet wird.",
           "cloud_suppression": "Hauptein/Ausschaltung für diesen gesamten Bildschirm. Wenn **aus** (Standard), werden alle Sensoren unten ignoriert und die Blendungskontrolle läuft wie gewohnt. Wenn **ein**, zeigt ein beliebiger konfigurierter Sensor (Wetterzustand, Lux, Strahlung oder Bewölkung) an, dass die Sonne abwesend ist, stoppt die Sonnenverfolgung und fährt die Beschattung zur **Wolkenposition** oben (oder zur Standardposition, wenn diese leer ist). Funktioniert eigenständig — der Klimamodus muss nicht aktiviert sein.",
           "cloudy_position": "Position (0-100%), zu der Beschattungen verschoben werden, wenn Wolkenunterdrückung aktiv ist (bewölkt / niedriges Licht). 0% = geschlossen (Jalousien heruntergelassen / Markise eingezogen), 100% = offen (Jalousien hochgezogen / Markise ausgefahren). Leer lassen, um die Standardposition zu verwenden.",
+          "cloudy_tilt": "Lamellen-Neigung (0-100%), um sie bei aktiver Wolkenunterdrückung anzuwenden. 0% = Lamellen geschlossen, 100% = Lamellen offen. Leer lassen, um die Lamellen dort zu behalten, wo sie sind, dies ist das Verhalten vor dieser Option. Wird nur bei Beschattungstypen mit unabhängiger Lamellenachse angeboten.",
           "is_sunny_sensor": "Optionaler Binärsensor, input_boolean, Schalter oder Zeitplan, der angibt, ob die Sonne auf das Fenster scheint. Bei EIN wird Sonneneinstrahlung angenommen; bei AUS wird Wolkenunterdrückung unabhängig vom Wetterzustand aktiviert. Bei Nicht verfügbar oder Unbekannt fällt die Integration auf die nachstehende Wetter-Entität/Wetterbedingungen-Logik zurück. Verwenden Sie diese Option, wenn Sie die Sonneneinstrahlung auf das Fenster upstream berechnen (z. B. Azimut-geregelte Bestrahlung) und Adaptive Cover Pro ein eindeutiges Boolesches Signal geben möchten.",
           "is_sunny_template": "Optionale Home-Assistant-Jinja2-Vorlage, die entscheidet, ob die Sonne auf das Fenster fällt. Wenn sie als wahr (on/true/1) ausgewertet wird, wird angenommen, dass die Sonne vorhanden ist; wenn sie als falsch ausgewertet wird, wird angenommen, dass sie abwesend ist und die Wolkenunterdrückung wird ausgelöst. Wie sie sich mit dem Binärsensor \"Is Sunny\" oben kombiniert (OR oder AND), wird durch die Einstellung \"Logik der Vorlage 'Is Sunny'\" unten definiert; sie kann auch ohne Sensor allein verwendet werden. Beispiel: ein Azimut-/Höhenvergleich oder ein Lux-Schwellenwert. Eine Vorlage, die leer ist oder nicht gerendert werden kann, äußert sich nicht, sodass die Integration auf den Sensor und dann auf die Wetterentität/Wetterbedingungen zurückgreift. Lassen Sie leer, um zu deaktivieren.",
           "is_sunny_template_mode": "Wie die Vorlage \"Is Sunny\" sich mit dem Binärsensor \"Is Sunny\" oben kombiniert. \"OR\" (Standard) – sonnig, wenn die Vorlage wahr ist ODER der Sensor eingeschaltet ist. \"AND\" – sonnig nur, wenn die Vorlage wahr ist UND der Sensor eingeschaltet ist. Ohne einen konfigurierten Sensor entscheidet die Vorlage allein in beiden Modi. Hat nur Auswirkungen, wenn oben eine Vorlage \"Is Sunny\" festgelegt ist.",
           "lux_release_threshold": "Optionale Hysterese-Schwelle. Sobald die Unterdrückung aktiv ist, halten Sie sie aktiv, bis das Lux mindestens diesen Wert erreicht — anstatt die Beschattung freizugeben, sobald das Lux über dem Lux-Schwellenwert ansteigt. Stellen Sie diesen Wert deutlich höher als den Lux-Schwellenwert ein, um zu verhindern, dass sich die Beschattung flatternd bewegt, wenn die Messung um einen einzelnen Übergangspunkt herum liegt. Lassen Sie das Feld leer, um die Hysterese zu deaktivieren (Freigabe beim Lux-Schwellenwert). Akzeptiert eine feste Zahl oder eine Home Assistant Jinja2-Vorlage.",
           "irradiance_release_threshold": "Optionale Hysterese-Schwelle. Sobald die Unterdrückung aktiv ist, halten Sie sie aktiv, bis die Bestrahlungsstärke mindestens diesen Wert erreicht — anstatt die Beschattung freizugeben, sobald die Bestrahlungsstärke über dem Bestrahlungsstärke-Schwellenwert ansteigt. Stellen Sie diesen Wert höher als den Bestrahlungsstärke-Schwellenwert ein, um zu verhindern, dass sich die Beschattung flatternd um einen einzelnen Übergangspunkt herum bewegt. Lassen Sie das Feld leer, um die Hysterese zu deaktivieren. Akzeptiert eine feste Zahl oder eine Home Assistant Jinja2-Vorlage.",
           "cloud_coverage_release_threshold": "Optionale Hysterese-Schwelle. Sobald die Unterdrückung aktiv ist, halten Sie sie aktiv, bis die Bewölkung auf diesen Wert oder darunter fällt — anstatt die Beschattung freizugeben, sobald die Bewölkung unter dem Bewölkungs-Schwellenwert fällt. Stellen Sie diesen Wert niedriger als den Bewölkungs-Schwellenwert ein, um zu verhindern, dass sich die Beschattung flatternd um einen einzelnen Übergangspunkt herum bewegt. Lassen Sie das Feld leer, um die Hysterese zu deaktivieren. Akzeptiert eine feste Zahl oder eine Home Assistant Jinja2-Vorlage.",
-          "cloud_suppression_hold_time": "Sekunden, die eine Änderung der Unterdrückungsentscheidung bestehen bleiben muss, bevor sie wirksam wird. Dies entprellt kurze Wolken und vorübergehende Sonnenpausen, damit sich die Beschattung nicht bei jeder vorüberziehenden Wolke bewegt. 0 (Standard) wendet Änderungen sofort an. Dieselbe Verzögerung gilt in beide Richtungen — Unterdrückung starten und beenden."
+          "cloud_suppression_hold_time": "Sekunden, die eine Änderung der Unterdrückungsentscheidung bestehen bleiben muss, bevor sie wirksam wird. Dies entprellt kurze Wolken und vorübergehende Sonnenpausen, damit sich die Beschattung nicht bei jeder vorüberziehenden Wolke bewegt. 0 (Standard) wendet Änderungen sofort an. Dieselbe Verzögerung gilt in beide Richtungen — Unterdrückung starten und beenden.",
+          "cloud_escalation_delay": "Das ist NICHT die Glättungs-Haltezeit. Die Glättungs-Haltezeit entscheidet, wie schnell die Wolkenunterdrückung greift; dies entscheidet, wie lange sie aktiv bleiben darf. Sobald die Wolkenunterdrückung durchgehend diese lange aktiv war, öffnet sich die Beschattung vollständig, statt an ihrer Wolkenposition und ihrem Lamellenwinkel zu bleiben. Bei einer reinen Neigungs-Jalousie öffnet sich auch der Rahmen. Leer lassen (oder alles Nullen), um solange zu halten, wie die Wolke anhält. Eine kurze Sonnenperiode setzt diese Uhr zurück — verwenden Sie die Glättungs-Haltezeit unten, um kurze Lücken zu überbrücken."
         }
       },
       "temperature_climate": {
@@ -1236,14 +1262,86 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "sun_motion": {
+        "name": "Sonne davor"
+      },
+      "manual_override": {
+        "name": "Manuelle Übersteuerung"
+      },
+      "glare_active": {
+        "name": "Blendung aktiv"
+      },
+      "position_mismatch": {
+        "name": "Positionsabweichung"
+      }
+    },
     "sensor": {
-      "control_status": {
+      "target_position": {
+        "name": "Zielposition"
+      },
+      "target_tilt": {
+        "name": "Zielneigung"
+      },
+      "start_sun": {
+        "name": "Sonnenbeginn"
+      },
+      "end_sun": {
+        "name": "Sonnenende"
+      },
+      "sun_position": {
+        "name": "Sonnenposition"
+      },
+      "last_skipped_action": {
+        "name": "Letzte übersprungene Aktion",
         "state": {
+          "no_action_skipped": "Keine Aktion übersprungen",
+          "integration_disabled": "Integration deaktiviert",
+          "auto_control_off": "Automatische Steuerung deaktiviert",
+          "same_position": "Gleiche Position",
+          "delta_too_small": "Positionsdelta zu klein",
+          "time_delta_too_small": "Zeitdelta zu klein",
+          "manual_override": "Manuelle Übersteuerung aktiv",
+          "no_capable_service": "Kein passender Dienst verfügbar",
+          "dry_run": "Probelauf",
+          "service_call_failed": "Dienstaufruf fehlgeschlagen",
+          "cover_unavailable": "Beschattung nicht verfügbar",
+          "policy_deferred": "Durch Beschattungsrichtlinie zurückgestellt",
+          "calibration_in_progress": "Kalibrierung läuft",
+          "superseded_in_queue": "In der Befehlswarteschlange ersetzt",
+          "preempted_by_handler": "Von einem anderen Handler verdrängt",
+          "hold": "Zurückgehalten",
+          "manual_override_hold": "Durch manuelle Übersteuerung zurückgehalten",
+          "motion_hold": "Durch Belegung zurückgehalten"
+        }
+      },
+      "last_cover_action": {
+        "name": "Letzte Beschattungsaktion"
+      },
+      "manual_override_end_time": {
+        "name": "Ende der manuellen Übersteuerung"
+      },
+      "position_verification": {
+        "name": "Positionsprüfung"
+      },
+      "control_status": {
+        "name": "Steuerungsstatus",
+        "state": {
+          "active": "Aktiv",
+          "calibrating": "Wird kalibriert",
+          "outside_time_window": "Außerhalb des Zeitfensters",
+          "position_delta_too_small": "Positionsdelta zu klein",
+          "time_delta_too_small": "Zeitdelta zu klein",
+          "manual_override": "Manuelle Übersteuerung",
+          "automatic_control_off": "Automatische Steuerung deaktiviert",
+          "sun_not_visible": "Sonne nicht sichtbar",
           "force_override_active": "Zwangsübersteuerung aktiv",
+          "weather_override_active": "Wetterübersteuerung aktiv",
           "motion_timeout": "Keine Belegung – Standardposition wird verwendet"
         }
       },
       "motion_status": {
+        "name": "Belegungsstatus",
         "state": {
           "not_configured": "Nicht konfiguriert",
           "motion_detected": "Belegung erkannt",
@@ -1273,6 +1371,7 @@
         "name": "Positionsvorhersage"
       },
       "climate_status": {
+        "name": "Klimastatus",
         "state": {
           "summer_mode": "Sommermodus",
           "winter_mode": "Wintermodus",
@@ -1326,6 +1425,9 @@
           "idle": "Bereit",
           "running": "Messung läuft"
         }
+      },
+      "cloud_escalation_end_time": {
+        "name": "Ende der Wolkenescalation"
       }
     },
     "switch": {
@@ -1387,6 +1489,9 @@
       }
     },
     "button": {
+      "reset_manual_override": {
+        "name": "Manuelle Übersteuerung zurücksetzen"
+      },
       "my_position": {
         "name": "Verwaltete My-Position"
       },
@@ -1899,6 +2004,30 @@
     "set_light_cloud": {
       "description": "Aktualisiert Wetter-Entity, Sonnig-Status-Filter, Lux-/Bestrahlungs-/Bewölkungs-Schwellwerte und Bewölkungs-Suppression.",
       "fields": {
+        "weather_entity": {
+          "description": "Wetter-Entity für Bedingungslesestoff. Null = kein.",
+          "name": "Wetter-Entity"
+        },
+        "weather_state": {
+          "description": "Wetterzustände, die 'Sonne ist draußen' bedeuten. Dient als Fallback, wenn kein Sensor/keine Vorlage für 'Sonne scheint' konfiguriert ist.",
+          "name": "Sonnige Wetterzustände"
+        },
+        "lux_entity": {
+          "description": "Lichtsensor-Entity. Null = kein.",
+          "name": "Lux-Sensor"
+        },
+        "lux_threshold": {
+          "description": "Lux-Wert oberhalb dessen die Beschattung in direktem Sonnenlicht ist.",
+          "name": "Lux-Schwellwert"
+        },
+        "irradiance_entity": {
+          "description": "Solar-Bestrahlungssensor-Entity. Null = kein.",
+          "name": "Bestrahlungssensor"
+        },
+        "irradiance_threshold": {
+          "description": "W/m² oberhalb dessen die Beschattung in direktem Sonnenlicht ist.",
+          "name": "Bestrahlung-Schwellwert"
+        },
         "cloud_coverage_entity": {
           "description": "Sensor meldet Bewölkungsprozentsatz. Null = kein.",
           "name": "Bewölkungssensor"
@@ -1911,33 +2040,17 @@
           "description": "Sonnenpositionierung unterdrücken wenn Bewölkung Schwellwert überschreitet.",
           "name": "Bewölkungs-Suppression aktivieren"
         },
-        "irradiance_entity": {
-          "description": "Solar-Bestrahlungssensor-Entity. Null = kein.",
-          "name": "Bestrahlungssensor"
-        },
-        "irradiance_threshold": {
-          "description": "W/m² oberhalb dessen die Beschattung in direktem Sonnenlicht ist.",
-          "name": "Bestrahlung-Schwellwert"
-        },
-        "lux_entity": {
-          "description": "Lichtsensor-Entity. Null = kein.",
-          "name": "Lux-Sensor"
-        },
-        "lux_threshold": {
-          "description": "Lux-Wert oberhalb dessen die Beschattung in direktem Sonnenlicht ist.",
-          "name": "Lux-Schwellwert"
-        },
-        "weather_entity": {
-          "description": "Wetter-Entity für Bedingungslesestoff. Null = kein.",
-          "name": "Wetter-Entity"
-        },
-        "weather_state": {
-          "description": "Wetterzustände, die 'Sonne ist draußen' bedeuten. Dient als Fallback, wenn kein Sensor/keine Vorlage für 'Sonne scheint' konfiguriert ist.",
-          "name": "Sonnige Wetterzustände"
+        "cloudy_tilt": {
+          "name": "Bewölkter Lamellenwinkel",
+          "description": "Lamellen-Neigung zum Einstellen während der Wolkenunterdrückung (0–100%). 0% = Lamellen geschlossen, 100% = Lamellen offen. Nur Jalousien; null = Lamellen unverändert lassen."
         },
         "is_sunny_sensor": {
           "name": "Binärsensor \"Sonne scheint\"",
           "description": "Binär-Entität, die definitiv angibt, ob die Sonne auf das Fenster scheint. EIN = sonnig, AUS = Wolkenunterdrückung aktiv. Nicht verfügbar fällt auf Wetterzustand zurück. Null = keine."
+        },
+        "cloud_escalation_delay": {
+          "name": "Vollständig öffnen nach",
+          "description": "Wie lange die Wolkenunterdrückung aktiv bleiben darf, bevor sich die Beschattung vollständig öffnet. Nicht die Glättungs-Haltezeit: Diese entscheidet, wie schnell die Unterdrückung greift, diese entscheidet, wie lange sie aktiv bleiben darf. Null oder alles Nullen = solange halten, wie die Wolke anhält."
         }
       },
       "name": "Licht- & Bewölkungseinstellungen festlegen"

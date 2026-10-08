@@ -44,6 +44,7 @@ from .position_context import PositionContextTracker
 from .queue import CommandQueue, QueueGrant
 from .routing import (
     ServiceCallPlan,
+    build_limit_positions,
     build_special_positions,
     is_my_preset_target,
     route_service_call,
@@ -65,6 +66,7 @@ __all__ = [
     "ServiceCallPlan",
     "TravelCalibration",
     "TravelPlan",
+    "build_limit_positions",
     "build_special_positions",
     "build_travel_plan",
     "is_my_preset_target",
@@ -250,7 +252,7 @@ class CoverCommandService:
             hass,
             logger,
             dry_run_fn=lambda: self._dry_run,
-            is_in_transit_fn=self._is_cover_in_transit,
+            is_in_transit_fn=self.is_cover_in_transit,
             queue_fn=lambda: self._queue,
         )
 
@@ -1428,15 +1430,19 @@ class CoverCommandService:
         """
         return self._get_current_position(entity)
 
-    def _is_cover_in_transit(self, entity_id: str) -> bool:
+    def is_cover_in_transit(self, entity_id: str) -> bool:
         """Return True when HA reports the cover as actively opening or closing.
 
-        Thin wrapper over :func:`managers.cover_command.transit.is_state_in_transit`
-        so the cover-command service, the dual-axis sequencer, and the
-        state classifier all consult the same string-membership rule (issue
-        #33 Phase 5). Callers that need to guard against stale position
-        reads during a transit move delegate here rather than inlining the
-        state check.
+        The public transit check: the coordinator hands it to the
+        manual-override engine as ``is_in_transit``, so it is part of this
+        service's surface rather than an internal helper (#1274). A thin
+        wrapper over
+        :func:`managers.cover_command.transit.is_state_in_transit` so the
+        cover-command service, the dual-axis sequencer, and the state
+        classifier all consult the same string-membership rule (issue #33
+        Phase 5). Callers that need to guard against stale position reads
+        during a transit move delegate here rather than inlining the state
+        check.
         """
         from .transit import is_state_in_transit
 
@@ -2083,11 +2089,31 @@ class CoverCommandService:
             )
 
         if not context.force and not force_endpoint:
+            # One-shot limit latch (issue #1350): PR #763 (#474) put the
+            # active min/max limit in context.special_positions so a cover
+            # can reach its configured floor/ceiling even under the delta
+            # threshold — but that membership test is stateless, so it
+            # re-fires forever on hardware that settles a point or two off
+            # the commanded limit (e.g. a coupled venetian whose tilt
+            # back-drives the carriage). Once this limit has already been
+            # dispatched to (``snapped_limit`` latched from a prior
+            # successful send, armed below), drop it from the effective
+            # special-positions list so the ordinary delta gate — the
+            # user's CONF_DELTA_POSITION — resumes ownership. Mirrors the
+            # forced_endpoint anti-relay latch's read-before/arm-after
+            # shape; see PerEntityState.snapped_limit for why it is not the
+            # same field.
+            _delta_specials = context.special_positions
+            if (
+                position in context.limit_positions
+                and self._get(entity_id).snapped_limit == position
+            ):
+                _delta_specials = [p for p in _delta_specials if p != position]
             if not self._check_position_delta(
                 entity_id,
                 position,
                 context.min_change,
-                context.special_positions,
+                _delta_specials,
                 sun_just_appeared=context.sun_just_appeared,
             ):
                 _delta = abs(_current - position) if _current is not None else None
@@ -2380,6 +2406,9 @@ class CoverCommandService:
                     position,
                     supports_position,
                     context.inverse_state,
+                    trigger=_trigger,
+                    force=context.force,
+                    is_safety=context.is_safety,
                 )
                 self._diag.last_cover_action["dry_run"] = True
                 return self._skip(
@@ -2476,6 +2505,9 @@ class CoverCommandService:
             position,
             supports_position,
             context.inverse_state,
+            trigger=_trigger,
+            force=context.force,
+            is_safety=context.is_safety,
             queue_grant=_queue_grant,
         )
 
@@ -2487,6 +2519,38 @@ class CoverCommandService:
             self.state(entity_id).forced_endpoint = position
         elif position not in (POSITION_CLOSED, POSITION_OPEN):
             self.state(entity_id).forced_endpoint = None
+
+        # Limit latch bookkeeping (issue #1350). Arm it to the dispatched
+        # position when that position is a configured always-enforced limit,
+        # so the NEXT approach to the same limit is narrowed to the ordinary
+        # delta gate above. Clear it otherwise, so a later approach to
+        # EITHER limit (a flip from floor to ceiling, or a resend after an
+        # intervening mid-range move) re-fires because the latched value no
+        # longer matches. Written only after a successful send — a dry-run
+        # or a cycle that skipped above never reaches this line, matching
+        # forced_endpoint's own "arm/clear on dispatch only" contract.
+        #
+        # Deliberately NOT unified with the forced_endpoint bookkeeping just
+        # above (no-duplication guideline, audited): forced_endpoint's write
+        # is a THREE-way rule keyed off a routing decision made earlier this
+        # cycle (`force_endpoint`, itself one conjunct of a four-part
+        # boolean mixing `context.full_endpoint_target`,
+        # `_endpoint_use_open_close`, and `_is_at_mechanical_stop`) — arm iff
+        # this dispatch WAS a forced endpoint-route, clear iff the dispatch
+        # landed mid-range, otherwise leave untouched. snapped_limit's write
+        # is a plain two-way function of `position` alone: no dependency on
+        # how this cycle got here, and no third "leave it" branch. The reads
+        # differ the same way — forced_endpoint gates WHICH HA SERVICE gets
+        # called (open_cover/close_cover vs. set_cover_position), snapped_limit
+        # gates WHICH POSITIONS the delta gate is allowed to bypass. A shared
+        # helper would need parameters for the stored field, the arm
+        # predicate, and the clear predicate, at which point it is generic
+        # get/set plumbing wrapped around two one-liners — replacing two
+        # auditable, independently issue-numbered invariants with an
+        # abstraction that hides the very rule each latch exists to state.
+        self.state(entity_id).snapped_limit = (
+            position if position in context.limit_positions else None
+        )
 
         # Cover-type policy hook: dual-axis covers (venetian) run their
         # settle+tilt sequence here. Default policies are no-ops, so vertical /
@@ -2959,7 +3023,7 @@ class CoverCommandService:
             # now would race the in-flight command and produce a double-move.
             # The cover will emit another state-change event when it stops;
             # that tick runs the full reconciliation path.
-            if self._is_cover_in_transit(entity_id):
+            if self.is_cover_in_transit(entity_id):
                 cover_state = getattr(
                     self._hass.states.get(entity_id), "state", "unknown"
                 )
@@ -3797,7 +3861,6 @@ class CoverCommandService:
         supports_position: bool,
         inverse_state: bool = False,
         *,
-        target_source: str = "",
         force: bool = False,
         is_safety: bool = False,
         trigger: str = "",
@@ -3823,7 +3886,6 @@ class CoverCommandService:
             ),
             recorded_target=self._get(entity).target,
             inverse_state=inverse_state,
-            target_source=target_source,
             force=force,
             is_safety=is_safety,
             trigger=trigger,

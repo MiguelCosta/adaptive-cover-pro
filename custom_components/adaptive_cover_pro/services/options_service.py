@@ -41,9 +41,11 @@ from ..const import (
     CONF_CLOUD_COVERAGE_ENTITY,
     CONF_CLOUD_COVERAGE_RELEASE_THRESHOLD,
     CONF_CLOUD_COVERAGE_THRESHOLD,
+    CONF_CLOUD_ESCALATION_DELAY,
     CONF_CLOUD_SUPPRESSION,
     CONF_CLOUD_SUPPRESSION_HOLD_TIME,
     CONF_CLOUD_SUPPRESSION_PRIORITY,
+    CONF_CLOUDY_TILT,
     CONF_DAY_NIGHT_BLACKOUT_THRESHOLD,
     CONF_DAY_NIGHT_CONCURRENT_RAIL_TRAVEL,
     CONF_DAY_NIGHT_CONTROL_MODEL,
@@ -139,6 +141,8 @@ from ..const import (
     CONF_SLIDING_POINT2_X,
     CONF_SLIDING_POINT2_Y,
     CONF_SLIDING_SLIDE_DIRECTION,
+    CONF_SNAP_CLOSED_BELOW,
+    CONF_SNAP_CLOSED_THRESHOLD,
     CONF_SOLAR_COVER_SHADE,
     CONF_SOLAR_COVER_SIDE,
     CONF_SOLAR_G_GLAZING,
@@ -171,6 +175,7 @@ from ..const import (
     CONF_TILT_DEPTH,
     CONF_TILT_DISTANCE,
     CONF_TILT_HORIZONTAL_PERCENT,
+    CONF_TILT_MIN_REFLECTED_ELEVATION,
     CONF_TILT_MODE,
     CONF_VENETIAN_BACKROTATE_PUBLISH_LAG,
     CONF_VENETIAN_MODE,
@@ -501,6 +506,8 @@ FIELD_VALIDATORS: dict[str, Any] = {
     CONF_MIN_TILT_SUN_ONLY: _bool_v(),
     # Shared tilt-axis safety margin (neutral key since #964)
     CONF_TILT_SAFETY_MARGIN: _range(CONF_TILT_SAFETY_MARGIN),
+    # Reflected-beam floor (#1282), shared by every vertical-facade slat cover
+    CONF_TILT_MIN_REFLECTED_ELEVATION: _range(CONF_TILT_MIN_REFLECTED_ELEVATION),
     # Venetian-specific options
     CONF_VENETIAN_POST_SETTLE_HOLD: _range(CONF_VENETIAN_POST_SETTLE_HOLD),
     CONF_VENETIAN_POST_SETTLE_MODE: _select_v(*VENETIAN_POST_SETTLE_MODES),
@@ -523,6 +530,8 @@ FIELD_VALIDATORS: dict[str, Any] = {
     CONF_DISTANCE: _range(CONF_DISTANCE),
     CONF_MINIMIZE_MOVEMENTS: _bool_v(),
     CONF_MAX_COVERAGE_STEPS: _range(CONF_MAX_COVERAGE_STEPS),
+    CONF_SNAP_CLOSED_BELOW: _bool_v(),
+    CONF_SNAP_CLOSED_THRESHOLD: _range(CONF_SNAP_CLOSED_THRESHOLD),
     # Blind spot — master enable plus per-slot left/right/elevation ranges
     # (issue #701). Slot 1 reuses the legacy unsuffixed keys; slots 2/3 are
     # suffixed. Every slot pulls its range from OPTION_RANGES.
@@ -671,6 +680,14 @@ FIELD_VALIDATORS: dict[str, Any] = {
     CONF_CLOUD_COVERAGE_ENTITY: _entity_v(),
     CONF_CLOUD_COVERAGE_THRESHOLD: _templatable_num(CONF_CLOUD_COVERAGE_THRESHOLD),
     CONF_CLOUD_SUPPRESSION: _bool_v(),
+    # The cloud slat angle (#175). Its position sibling ``cloudy_position``
+    # is ValidatorKind.NONE and carries no entry here, so it is not
+    # service-settable — a historical accident this deliberately does not
+    # copy: bounds validation on a percentage field is worth having.
+    CONF_CLOUDY_TILT: _range(CONF_CLOUDY_TILT),
+    # The escalation delay (#175). A DurationSelector dict or null — no
+    # OPTION_RANGES row, because "2 hours" is not a bounded number.
+    CONF_CLOUD_ESCALATION_DELAY: _duration_v(),
     # Smoothing controls (issue #864): symmetric hold-time + per-trigger
     # hysteresis release edges. Release thresholds are number-or-template like
     # their activate counterparts above.
@@ -844,6 +861,11 @@ _SECTION_LIGHT_CLOUD = frozenset(
         CONF_CLOUD_COVERAGE_ENTITY,
         CONF_CLOUD_COVERAGE_THRESHOLD,
         CONF_CLOUD_SUPPRESSION,
+        # Have FIELD_VALIDATORS entries, so they must be service-settable too
+        # — else the validator is dead code and the key silently dropped
+        # (#175).
+        CONF_CLOUDY_TILT,
+        CONF_CLOUD_ESCALATION_DELAY,
         CONF_CLOUD_SUPPRESSION_HOLD_TIME,
         CONF_LUX_RELEASE_THRESHOLD,
         CONF_IRRADIANCE_RELEASE_THRESHOLD,

@@ -36,6 +36,20 @@
     "day_night_middle_rail_unset": {
       "title": "Day/night middle rail not selected",
       "description": "**{name}** is configured as a two-rail day/night shade, but its middle-rail cover is not selected — or names a cover that is not in this instance's cover list. Both rails are being sent the same position, so the shade is behaving like a plain blind and the sheer/blackout blend is never applied. Pick the middle-rail cover in the cover's options, and make sure it is also listed as one of the controlled covers."
+    },
+    "duplicate_device": {
+      "title": "Leftover device from an earlier version",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Remove the leftover device",
+            "description": "The device **{device_name}** belongs to **{name}** but no longer holds any of its entities. Older versions of Adaptive Cover Pro left this record behind when they linked a cover to its physical device; **{name}** now has its own device, and everything has already moved there. Removing **{device_name}** only deletes the empty record — no entity, automation or dashboard card is affected. If it turns out something is still attached to it, this will stop and tell you instead of removing anything."
+          }
+        },
+        "abort": {
+          "device_in_use": "The device was not removed: it no longer matches what this repair expected. Either it has been deleted already, it now holds entities, or it belongs to another integration. Nothing was changed. Reload Adaptive Cover Pro to re-check it, and this warning clears on its own once the leftover is gone."
+        }
+      }
     }
   },
   "config": {
@@ -114,6 +128,7 @@
           "min_tilt": "Minimum Slat Tilt (%)",
           "min_tilt_sun_only": "Apply minimum tilt only during sun tracking",
           "tilt_safety_margin": "Tilt Safety Margin",
+          "tilt_min_reflected_elevation": "Minimum Reflected Sun Angle",
           "arm_length": "Arm Length",
           "awning_min_angle": "Arm Angle When Closed",
           "awning_max_angle": "Arm Angle When Fully Open",
@@ -180,6 +195,7 @@
           "min_tilt": "Floor on the minimum slat tilt percentage (0–100). Higher values prevent slats from closing fully — useful for blinds that block all light at 0%. Default: 0 (no floor). Example: set to 10 if your blinds become fully dark at 0% and you always want some light through.",
           "min_tilt_sun_only": "When off (default), the minimum tilt floor is enforced whenever a tilt is computed — including the parked default tilt a venetian cover uses when the sun is outside the sun acceptance angle. When on, the floor applies only while the sun is actively tracked. (Tilt-only and louvered-roof covers have no separate parked tilt, so both settings coincide.) Sunset tilt and custom-position tilts are never affected either way.",
           "tilt_safety_margin": "Extra slat-closing margin for tilt-axis covers, 0.0–1.0 — raise it when a sliver of direct sun leaks past the slats. It only moves slats that still have room to close: where the calculation already parks them at a limit — fully open, fully closed, or the edge of a narrowed Minimum/Maximum Slat Tilt band — it changes nothing, and how often that happens depends on your cover type, slat proportions, and tilt mode. 0.0 is an exact no-op; start around 0.3–0.5 and raise until the sun clears. Prefer this over lowering Maximum Slat Tilt, a blunt global cap that deadens this margin as well.",
+          "tilt_min_reflected_elevation": "Keeps sun that bounces off the upper face of the slats from shining into the room. When the sun is high, the daylight-optimal slat tilts its outer edge up and the slats become a mirror aimed at the room — most noticeable with floor-to-ceiling glass. Set the lowest angle above horizontal the reflected beam may leave at, in degrees: the slats are tilted back toward (or past) horizontal just far enough to reach it, and never opened beyond the direct-sun cut-off. 0 = disabled (default). To pick a value, take the nearest place someone sits or stands and divide eye height above the sill by distance from the glass: 1.2 m at 2 m ≈ 31°, 1.7 m at 1 m ≈ 60°. Start around 30° and raise it if reflections still reach eye level. Minimum Slat Tilt is applied afterwards and can re-open the slats past this cap — keep that floor low, or the reflection comes back.",
           "arm_length": "Length of the pivoting arm of an oscillating (drop-arm) awning, from the wall pivot to the fabric edge. Shown in the unit Home Assistant is configured for. Used with the arm sweep angle to compute how far the fabric reaches out at each open percentage. Example: 0.8 m / 31 in.",
           "awning_min_angle": "Arm angle when the awning is fully closed/retracted (0–180°). Typically 0° = arm vertical against the wall. Defines the start of the sweep arc.",
           "awning_max_angle": "Arm angle when the awning is fully open (0–180°). The arm sweeps linearly from the closed angle to this value across 0–100% open. Example: a 175° total sweep ≈ 1.75° per 1%.",
@@ -401,7 +417,7 @@
       },
       "automation": {
         "title": "Movement & Schedule",
-        "description": "Global movement constraints applied after the pipeline picks a position, regardless of which handler won, plus the operational time window.\n\n**Delta position** prevents the cover from moving unless the target has shifted by at least this many percent — reduces motor wear from small sun changes. **Delta time** enforces a minimum gap between consecutive commands. **Minimize movements** and **Maximum coverage steps** snap sun tracking to a few fixed coverage levels instead of following the sun continuously. **Start/end times** define when automatic control is allowed to run; leave blank to run all day. An HA entity can supply either time dynamically.\n\n[Learn more]({learn_more})",
+        "description": "Global movement constraints applied after the pipeline picks a position, regardless of which handler won, plus the operational time window.\n\n**Delta position** prevents the cover from moving unless the target has shifted by at least this many percent — reduces motor wear from small sun changes. **Delta time** enforces a minimum gap between consecutive commands. **Minimize movements** and **Maximum coverage steps** snap sun tracking to a few fixed coverage levels instead of following the sun continuously. **Snap closed below** collapses a small non-zero sun-tracking demand straight to fully closed instead of leaving a barely-open sliver. **Start/end times** define when automatic control is allowed to run; leave blank to run all day. An HA entity can supply either time dynamically.\n\n[Learn more]({learn_more})",
         "data": {
           "delta_position": "Minimum position adjustment",
           "delta_time": "Minimum interval between position changes",
@@ -411,6 +427,8 @@
           "end_entity": "Entity indicating ending time",
           "minimize_movements": "Minimize movements",
           "max_coverage_steps": "Maximum coverage steps",
+          "snap_closed_below": "Snap closed below threshold",
+          "snap_closed_threshold": "Snap closed threshold",
           "command_queue": "Command queue"
         },
         "data_description": {
@@ -422,6 +440,8 @@
           "end_entity": "Entity representing ending time state, overriding the fixed end time set above. Useful for automating the end time with an entity (e.g., sensor that provides bedtime based on calendar or daily routine).",
           "minimize_movements": "Reduce how often the cover repositions while tracking the sun by snapping to a few fixed coverage levels instead of following the sun continuously. Rounds toward MORE coverage, so direct sun is never let in by the rounding. Trades some natural light for far fewer motor movements. Default: off.",
           "max_coverage_steps": "How many distinct positions the cover may use on its way to full coverage when 'Minimize movements' is on (1-10). 1 = jump straight to full coverage the moment the sun enters the sun acceptance angle and hold there until it leaves (fewest movements). Higher values track the sun more gradually in that many steps. Default: 1.",
+          "snap_closed_below": "When a sun-tracking position is barely open (a small non-zero demand under the threshold below), send it all the way closed instead of leaving a hard-to-see sliver of light through. Only affects sun-tracking positions; an active minimum position always wins over the snap. Default: off.",
+          "snap_closed_threshold": "How close to fully closed (%) a sun-tracking demand must be before 'Snap closed below threshold' pulls it the rest of the way to the closed endpoint (1-50). Only applies when there is still a gap to close — an already-closed position is untouched. Default: 10%.",
           "command_queue": "Serialize this cover's commands against other covers assigned to the same queue name. Covers sharing a queue never transmit at the same moment — useful for one-way radio backends (Somfy RTS, RFXtrx) where simultaneous commands collide and are lost. The gap between commands is set on the Command Queue entry with the same name, or defaults to 5 seconds if none exists. Leave blank for no queue (default)."
         }
       },
@@ -504,6 +524,7 @@
           "min_tilt": "Minimum Slat Tilt (%)",
           "min_tilt_sun_only": "Apply minimum tilt only during sun tracking",
           "tilt_safety_margin": "Tilt Safety Margin",
+          "tilt_min_reflected_elevation": "Minimum Reflected Sun Angle",
           "arm_length": "Arm Length",
           "awning_min_angle": "Arm Angle When Closed",
           "awning_max_angle": "Arm Angle When Fully Open",
@@ -570,6 +591,7 @@
           "min_tilt": "Floor on the minimum slat tilt percentage (0–100). Higher values prevent slats from closing fully — useful for blinds that block all light at 0%. Default: 0 (no floor). Example: set to 10 if your blinds become fully dark at 0% and you always want some light through.",
           "min_tilt_sun_only": "When off (default), the minimum tilt floor is enforced whenever a tilt is computed — including the parked default tilt a venetian cover uses when the sun is outside the sun acceptance angle. When on, the floor applies only while the sun is actively tracked. (Tilt-only and louvered-roof covers have no separate parked tilt, so both settings coincide.) Sunset tilt and custom-position tilts are never affected either way.",
           "tilt_safety_margin": "Extra slat-closing margin for tilt-axis covers, 0.0–1.0 — raise it when a sliver of direct sun leaks past the slats. It only moves slats that still have room to close: where the calculation already parks them at a limit — fully open, fully closed, or the edge of a narrowed Minimum/Maximum Slat Tilt band — it changes nothing, and how often that happens depends on your cover type, slat proportions, and tilt mode. 0.0 is an exact no-op; start around 0.3–0.5 and raise until the sun clears. Prefer this over lowering Maximum Slat Tilt, a blunt global cap that deadens this margin as well.",
+          "tilt_min_reflected_elevation": "Keeps sun that bounces off the upper face of the slats from shining into the room. When the sun is high, the daylight-optimal slat tilts its outer edge up and the slats become a mirror aimed at the room — most noticeable with floor-to-ceiling glass. Set the lowest angle above horizontal the reflected beam may leave at, in degrees: the slats are tilted back toward (or past) horizontal just far enough to reach it, and never opened beyond the direct-sun cut-off. 0 = disabled (default). To pick a value, take the nearest place someone sits or stands and divide eye height above the sill by distance from the glass: 1.2 m at 2 m ≈ 31°, 1.7 m at 1 m ≈ 60°. Start around 30° and raise it if reflections still reach eye level. Minimum Slat Tilt is applied afterwards and can re-open the slats past this cap — keep that floor low, or the reflection comes back.",
           "arm_length": "Length of the pivoting arm of an oscillating (drop-arm) awning, from the wall pivot to the fabric edge. Shown in the unit Home Assistant is configured for. Used with the arm sweep angle to compute how far the fabric reaches out at each open percentage. Example: 0.8 m / 31 in.",
           "awning_min_angle": "Arm angle when the awning is fully closed/retracted (0–180°). Typically 0° = arm vertical against the wall. Defines the start of the sweep arc.",
           "awning_max_angle": "Arm angle when the awning is fully open (0–180°). The arm sweeps linearly from the closed angle to this value across 0–100% open. Example: a 175° total sweep ≈ 1.75° per 1%.",
@@ -935,6 +957,8 @@
           "cloud_coverage_threshold": "Cloud coverage threshold",
           "cloud_suppression": "Enable cloud suppression (master switch)",
           "cloudy_position": "Cloudy position (optional)",
+          "cloudy_tilt": "Cloudy slat angle (optional)",
+          "cloud_escalation_delay": "Open fully after (optional)",
           "lux_release_threshold": "Lux release threshold (optional)",
           "irradiance_release_threshold": "Irradiance release threshold (optional)",
           "cloud_coverage_release_threshold": "Cloud coverage release threshold (optional)",
@@ -956,6 +980,8 @@
           "cloud_coverage_threshold": "Cloud coverage percentage at or above which glare control is suppressed. For example, 75 means the cover stops sun-tracking when the sky is 75% or more overcast. Accepts a fixed number or a Home Assistant Jinja2 template that evaluates to a number, re-evaluated each update cycle.",
           "cloud_suppression": "Master on/off for this entire screen. When **off** (default), every sensor below is ignored and glare control runs as usual. When **on**, any configured sensor (weather state, lux, irradiance, or cloud coverage) that indicates the sun is absent will stop sun-tracking and move the cover to the **Cloudy position** above (or the default position if that is blank). Works on its own — climate mode does not need to be enabled.",
           "cloudy_position": "Position (0-100%) to move covers to when cloud suppression fires (cloudy / low-light conditions). 0% = closed (blinds lowered / awning retracted), 100% = open (blinds raised / awning extended). Leave blank to use the default position.",
+          "cloudy_tilt": "Slat tilt (0-100%) to command while cloud suppression is holding. 0% = slats closed, 100% = slats open. Leave empty to keep the slats where they are, which is the behaviour before this option existed. Only offered on cover types with an independent slat axis.",
+          "cloud_escalation_delay": "This is NOT the smoothing hold time. The smoothing hold time decides how quickly cloud suppression engages; this decides how long it may stay engaged. Once cloud suppression has held continuously for this long, the cover opens fully instead of staying at its cloudy position and slat angle. On a tilt-only venetian the carriage opens too. Leave empty (or all zeros) to hold for as long as the cloud lasts. A brief sunny spell resets this clock — use the smoothing hold time below to ride out short gaps.",
           "lux_release_threshold": "Optional hysteresis edge. Once suppression is active, keep it active until lux rises to at least this value — instead of releasing the moment lux climbs back above the Lux threshold. Set it comfortably higher than the Lux threshold to stop the cover flapping when the reading hovers around a single crossing point. Leave blank to disable hysteresis (release at the Lux threshold). Accepts a fixed number or a Home Assistant Jinja2 template.",
           "irradiance_release_threshold": "Optional hysteresis edge. Once suppression is active, keep it active until irradiance rises to at least this value — instead of releasing the moment it climbs back above the Irradiance threshold. Set it higher than the Irradiance threshold to prevent flapping around a single crossing point. Leave blank to disable hysteresis. Accepts a fixed number or a Home Assistant Jinja2 template.",
           "cloud_coverage_release_threshold": "Optional hysteresis edge. Once suppression is active, keep it active until cloud coverage falls to this value or below — instead of releasing the moment it drops below the Cloud coverage threshold. Set it lower than the Cloud coverage threshold to prevent flapping around a single crossing point. Leave blank to disable hysteresis. Accepts a fixed number or a Home Assistant Jinja2 template.",
@@ -1236,7 +1262,71 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "sun_motion": {
+        "name": "Sun Infront"
+      },
+      "manual_override": {
+        "name": "Manual Override"
+      },
+      "glare_active": {
+        "name": "Glare Active"
+      },
+      "position_mismatch": {
+        "name": "Position Mismatch"
+      }
+    },
     "sensor": {
+      "target_position": {
+        "name": "Target Position"
+      },
+      "target_tilt": {
+        "name": "Target Tilt"
+      },
+      "start_sun": {
+        "name": "Start Sun"
+      },
+      "end_sun": {
+        "name": "End Sun"
+      },
+      "sun_position": {
+        "name": "Sun Position"
+      },
+      "last_skipped_action": {
+        "name": "Last Skipped Action",
+        "state": {
+          "no_action_skipped": "No Action Skipped",
+          "integration_disabled": "Integration Disabled",
+          "auto_control_off": "Automatic Control Off",
+          "same_position": "Same Position",
+          "delta_too_small": "Position Delta Too Small",
+          "time_delta_too_small": "Time Delta Too Small",
+          "manual_override": "Manual Override Active",
+          "no_capable_service": "No Capable Service",
+          "dry_run": "Dry Run",
+          "service_call_failed": "Service Call Failed",
+          "cover_unavailable": "Cover Unavailable",
+          "policy_deferred": "Deferred by Cover Policy",
+          "calibration_in_progress": "Calibration In Progress",
+          "superseded_in_queue": "Superseded in Command Queue",
+          "preempted_by_handler": "Preempted by Another Handler",
+          "motion_hold": "Occupancy Hold",
+          "manual_override_hold": "Manual Override Hold",
+          "hold": "Hold"
+        }
+      },
+      "last_cover_action": {
+        "name": "Last Cover Action"
+      },
+      "manual_override_end_time": {
+        "name": "Manual Override End Time"
+      },
+      "cloud_escalation_end_time": {
+        "name": "Cloud Escalation End Time"
+      },
+      "position_verification": {
+        "name": "Position Verification"
+      },
       "solar_calculation": {
         "name": "Solar Calculation"
       },
@@ -1244,12 +1334,23 @@
         "name": "Estimated Solar Gain"
       },
       "control_status": {
+        "name": "Control Status",
         "state": {
+          "active": "Active",
+          "calibrating": "Calibrating",
+          "outside_time_window": "Outside Time Window",
+          "position_delta_too_small": "Position Delta Too Small",
+          "time_delta_too_small": "Time Delta Too Small",
+          "manual_override": "Manual Override",
+          "automatic_control_off": "Automatic Control Off",
+          "sun_not_visible": "Sun Not Visible",
           "force_override_active": "Force override active",
+          "weather_override_active": "Weather override active",
           "motion_timeout": "No occupancy - using default position"
         }
       },
       "motion_status": {
+        "name": "Occupancy Status",
         "state": {
           "not_configured": "Not Configured",
           "motion_detected": "Occupancy Detected",
@@ -1260,6 +1361,7 @@
         }
       },
       "climate_status": {
+        "name": "Climate Status",
         "state": {
           "summer_mode": "Summer Mode",
           "winter_mode": "Winter Mode",
@@ -1387,6 +1489,9 @@
       }
     },
     "button": {
+      "reset_manual_override": {
+        "name": "Reset Manual Override"
+      },
       "my_position": {
         "name": "Managed My Position"
       },
@@ -1947,6 +2052,14 @@
         "cloud_suppression": {
           "name": "Enable cloud suppression",
           "description": "Suppress solar positioning when cloud coverage exceeds threshold."
+        },
+        "cloudy_tilt": {
+          "name": "Cloudy slat angle",
+          "description": "Slat tilt to set while cloud suppression is holding (0\u2013100%). 0% = slats closed, 100% = slats open. Venetian blinds only; null = leave the slats alone."
+        },
+        "cloud_escalation_delay": {
+          "name": "Open fully after",
+          "description": "How long cloud suppression may keep holding before the cover opens fully. Not the smoothing hold time: that one decides how fast suppression engages, this one how long it may stay engaged. Null or all zeros = hold for as long as the cloud lasts."
         },
         "is_sunny_sensor": {
           "name": "Is Sunny binary sensor",

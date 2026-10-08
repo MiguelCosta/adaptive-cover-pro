@@ -194,6 +194,22 @@ def test_tilt_safety_margin_in_option_ranges() -> None:
     assert OPTION_RANGES[CONF_TILT_SAFETY_MARGIN] == (0.0, 1.0)
 
 
+@pytest.mark.unit
+def test_tilt_min_reflected_elevation_in_option_ranges() -> None:
+    """The reflected-beam floor (#1282) is registry-declared, 0-90 degrees.
+
+    ``0`` is the disabled sentinel and therefore a legal value, so the range
+    starts at it rather than at the smallest meaningful angle.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_TILT_MIN_REFLECTED_ELEVATION,
+    )
+
+    assert CONF_TILT_MIN_REFLECTED_ELEVATION in OPTION_RANGES
+    assert OPTION_RANGES[CONF_TILT_MIN_REFLECTED_ELEVATION] == (0, 90)
+    assert CONF_TILT_MIN_REFLECTED_ELEVATION in FIELD_VALIDATORS
+
+
 # ---------------------------------------------------------------------------
 # Solar transmittance (#1236) — both g-value sliders are registry-declared.
 # ---------------------------------------------------------------------------
@@ -268,6 +284,30 @@ def test_weather_override_tilt_is_service_settable() -> None:
     assert CONF_WEATHER_OVERRIDE_TILT in FIELD_VALIDATORS
     assert CONF_WEATHER_OVERRIDE_TILT in ALL_SETTABLE_KEYS
     assert OPTION_RANGES[CONF_WEATHER_OVERRIDE_TILT] == (0, 100)
+
+
+@pytest.mark.unit
+def test_cloudy_tilt_is_service_settable() -> None:
+    """The #175 cloud slat angle must be reachable from ``set_light_cloud``.
+
+    Same convention the weather tilt above follows: a FIELD_VALIDATORS entry
+    with no service seat is dead code and the key is silently dropped. The
+    range is the shared tilt range — a second ``(0, 100)`` constant for the
+    same axis would be exactly the duplicate the no-magic-numbers rule bans.
+
+    Deliberately asymmetric with ``cloudy_position``, which is
+    ``ValidatorKind.NONE`` and therefore not settable. That is a historical
+    accident rather than a pattern: bounds validation on a percentage field is
+    worth having, and having it is what makes the service seat mandatory.
+    """
+    from custom_components.adaptive_cover_pro.const import CONF_CLOUDY_TILT
+    from custom_components.adaptive_cover_pro.services.options_service import (
+        ALL_SETTABLE_KEYS,
+    )
+
+    assert CONF_CLOUDY_TILT in FIELD_VALIDATORS
+    assert CONF_CLOUDY_TILT in ALL_SETTABLE_KEYS
+    assert OPTION_RANGES[CONF_CLOUDY_TILT] == (0, 100)
 
 
 @pytest.mark.unit

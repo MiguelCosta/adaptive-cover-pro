@@ -434,6 +434,42 @@ class TestFieldValidators:
         with pytest.raises(Exception):
             FIELD_VALIDATORS["tilt_horizontal_percent"](101)
 
+    def test_tilt_min_reflected_elevation_validates_range(self):
+        """0-90 degrees, with ``0`` the disabled sentinel (#1282)."""
+        FIELD_VALIDATORS["tilt_min_reflected_elevation"](0)
+        FIELD_VALIDATORS["tilt_min_reflected_elevation"](45)
+        FIELD_VALIDATORS["tilt_min_reflected_elevation"](90)
+        FIELD_VALIDATORS["tilt_min_reflected_elevation"](None)
+
+        with pytest.raises(Exception):
+            FIELD_VALIDATORS["tilt_min_reflected_elevation"](-1)
+
+        with pytest.raises(Exception):
+            FIELD_VALIDATORS["tilt_min_reflected_elevation"](91)
+
+    def test_tilt_min_reflected_elevation_is_settable_through_set_option(self):
+        """A FIELD_VALIDATORS entry with no service seat is dead code.
+
+        ``_handle_set_option`` gates on exactly three things — not in
+        ``IDENTITY_KEYS``, present in ``FIELD_VALIDATORS``, and surviving
+        ``validate_options_patch`` — so the last of those is run here for real
+        rather than inferred from the first two (#1282 audit). Like
+        ``tilt_safety_margin``, the key is in no ``_SECTION_*`` frozenset, so
+        the generic ``set_option`` is its only service seat; that is what this
+        pins.
+        """
+        assert "tilt_min_reflected_elevation" in FIELD_VALIDATORS
+        assert "tilt_min_reflected_elevation" not in IDENTITY_KEYS
+
+        # The real gate, on every cover type whose geometry offers the field.
+        for sensor_type in ("cover_tilt", "cover_venetian"):
+            assert validate_options_patch(
+                {"tilt_min_reflected_elevation": 30}, {}, sensor_type
+            ) == {"tilt_min_reflected_elevation": 30}
+        # And it is a genuine gate: an out-of-range value is rejected there.
+        with pytest.raises(ServiceValidationError):
+            validate_options_patch({"tilt_min_reflected_elevation": 91}, {})
+
     def test_tilt_horizontal_percent_accepted_on_a_straddling_calibration(self):
         """The reporter's blind: 0° → 0 %, horizontal → 50 %, 130° → 100 %."""
         validate_options_patch(
@@ -1678,6 +1714,41 @@ class TestSetLightCloud:
 
         new_opts = mock_update.call_args[1]["options"]
         assert new_opts["weather_state"] == new_states
+
+    async def test_cloudy_tilt_round_trips_and_clears(self, hass: HomeAssistant):
+        """The #175 slat angle is settable, and ``None`` clears it.
+
+        It carries a ``FIELD_VALIDATORS`` entry, so the service seat is not
+        optional — without it the validator would be dead code and the key
+        silently dropped by ``_build_patch``. The clear leg matters as much as
+        the set leg: ``None`` is what returns the cover to "leave my slats
+        alone", and it must not be coerced to 0 (which means slats closed).
+        ``apply_options_patch`` clears by *removing* the key, so absence — not
+        a stored ``None`` — is what the service leaves behind.
+        """
+        from custom_components.adaptive_cover_pro.const import CONF_CLOUDY_TILT
+
+        await _setup(hass, entry_id="lc_tilt_01", cover_type=CoverType.VENETIAN)
+        with (
+            patch.object(hass.config_entries, "async_update_entry") as mock_update,
+            patch.object(hass.config_entries, "async_reload", new_callable=AsyncMock),
+        ):
+            await _call(hass, "set_light_cloud", {CONF_CLOUDY_TILT: 100})
+        assert mock_update.call_args[1]["options"][CONF_CLOUDY_TILT] == 100
+
+        with (
+            patch.object(hass.config_entries, "async_update_entry") as mock_update,
+            patch.object(hass.config_entries, "async_reload", new_callable=AsyncMock),
+        ):
+            await _call(hass, "set_light_cloud", {CONF_CLOUDY_TILT: 0})
+        assert mock_update.call_args[1]["options"][CONF_CLOUDY_TILT] == 0
+
+        with (
+            patch.object(hass.config_entries, "async_update_entry") as mock_update,
+            patch.object(hass.config_entries, "async_reload", new_callable=AsyncMock),
+        ):
+            await _call(hass, "set_light_cloud", {CONF_CLOUDY_TILT: None})
+        assert CONF_CLOUDY_TILT not in mock_update.call_args[1]["options"]
 
 
 class TestSetClimate:

@@ -15,6 +15,7 @@ from typing import Any
 
 from ..const import ControlStatus
 from ..const import (
+    CONF_CLOUD_ESCALATION_DELAY,
     CONF_IRRADIANCE_ENTITY,
     CONF_IRRADIANCE_PLANE,
     DEFAULT_IRRADIANCE_PLANE,
@@ -26,7 +27,7 @@ from ..const import (
     ReasonCode,
     SunState,
 )
-from ..reason_i18n import Reason, render
+from ..reason_i18n import Reason, reason_attrs, render
 
 # Sensor state classifications (issue #693, Q3).
 _SENSOR_STATE_NOT_CONFIGURED = "not_configured"
@@ -106,6 +107,13 @@ class DiagnosticContext:
 
     # Automation
     automatic_control: bool
+    # Whether the "return to default when disabled" switch is armed — the
+    # auto-control-OFF return-to-default seam (issue #1376) only fires when
+    # this is True. Absent from every prior diagnostics dump, which is why a
+    # downloaded attachment could not confirm whether that seam was armed on
+    # a reporter's install. Defaults False so contexts built without it
+    # (tests, older callers) are unaffected.
+    return_to_default_toggle: bool = False
     # True while a travel-time calibration run holds the covers.
     calibrating: bool = False
     # Whether the user's start/end CLOCK window is open, ignoring the daytime
@@ -218,6 +226,15 @@ class DiagnosticContext:
     # Manual override detection toggles
     manual_toggle: bool = True
     enabled_toggle: bool = True
+
+    # Cloud-suppression escalation live state (issue #175). Threaded from
+    # ``CloudSuppressionManager`` because neither is recoverable from config:
+    # the deadline is DERIVED from an in-memory start instant, so a support
+    # read of the options dict can see the configured delay and still have no
+    # idea whether the hold is two minutes or two hours old. Defaulted so
+    # contexts built without them (tests, older callers) are unaffected.
+    cloud_suppression_phase: Any = None  # CloudSuppressionPhase | None
+    cloud_escalation_deadline: Any = None  # dt.datetime | None
 
     # Issue #33 Phase 5: per-entity counts of cross-axis publish-lag
     # suppressions in the last 24 h. Threaded in from
@@ -1030,6 +1047,31 @@ class DiagnosticsBuilder:
         return diagnostics
 
     @staticmethod
+    def build_cloud_escalation_block(ctx: DiagnosticContext) -> dict:
+        """Describe the cloud-escalation clock: the setting AND the live phase.
+
+        Three keys, because the stored delay alone cannot answer the question a
+        reporter actually asks. "Why has my cover not opened yet" needs the
+        phase the manager resolved and the deadline it derived — and the
+        deadline exists nowhere in the options dict, since it is computed from
+        an in-memory start instant on every read (issue #175).
+
+        The delay is read RAW, ungated and un-normalised: the dump's job is to
+        show what is STORED, so an all-zero duration that the runtime treats as
+        "off" must still be visible as the all-zero duration it is.
+        """
+        deadline = ctx.cloud_escalation_deadline
+        return {
+            "cloud_escalation_delay": (ctx.config_options or {}).get(
+                CONF_CLOUD_ESCALATION_DELAY
+            ),
+            "cloud_suppression_phase": ctx.cloud_suppression_phase,
+            "cloud_escalation_deadline": (
+                None if deadline is None else deadline.isoformat()
+            ),
+        }
+
+    @staticmethod
     def build_command_queue_block(queue) -> dict | None:
         """Describe the dispatch queue this entry belongs to, or ``None``.
 
@@ -1150,6 +1192,17 @@ class DiagnosticsBuilder:
                     "matched": step.matched,
                     "reason": step.reason,
                     "position": step.position,
+                    # The stable code + params, same flattening the decision-trace
+                    # sensor attributes use (issue #1359). Consumers of a
+                    # downloaded diagnostics payload — the offline triage engine,
+                    # the companion card — must match on the code, never on the
+                    # English ``reason`` above. Additive: omitted entirely for a
+                    # legacy step that carries only the prose string.
+                    **(
+                        reason_attrs(step.reason_payload)
+                        if step.reason_payload is not None
+                        else {}
+                    ),
                     **(
                         {"priority": step.priority} if step.priority is not None else {}
                     ),
@@ -1248,6 +1301,7 @@ class DiagnosticsBuilder:
             CONF_AZIMUTH,
             CONF_CLOUD_SUPPRESSION,
             CONF_CLOUDY_POSITION,
+            CONF_CLOUDY_TILT,
             CONF_ENABLE_BLIND_SPOT,
             CONF_ENABLE_MAX_POSITION,
             CONF_ENABLE_MIN_POSITION,
@@ -1340,6 +1394,11 @@ class DiagnosticsBuilder:
                 "enabled_toggle": ctx.enabled_toggle,
                 "cloud_suppression_enabled": options.get(CONF_CLOUD_SUPPRESSION, False),
                 "cloudy_position": options.get(CONF_CLOUDY_POSITION),
+                # Read raw, ungated (#175): the dump's job is to show what
+                # is STORED, and a value the policy currently drops is
+                # exactly what a triage read needs to see.
+                "cloudy_tilt": options.get(CONF_CLOUDY_TILT),
+                **DiagnosticsBuilder.build_cloud_escalation_block(ctx),
                 # issue #625: raw config value (None when disabled).
                 "end_of_window_position": options.get(CONF_END_OF_WINDOW_POS),
                 "is_sunny_source": (
@@ -1351,6 +1410,11 @@ class DiagnosticsBuilder:
                     )
                 ),
                 "templated_thresholds": DiagnosticsBuilder._templated_thresholds(ctx),
+                # Issue #1376 secondary finding: neither was previously in the
+                # configuration block, so an attachment could not confirm
+                # whether the auto-off return-to-default seam was armed.
+                "automatic_control": ctx.automatic_control,
+                "return_to_default_toggle": ctx.return_to_default_toggle,
             }
         }
 

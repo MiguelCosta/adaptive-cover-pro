@@ -36,6 +36,20 @@
     "day_night_middle_rail_unset": {
       "title": "Barre intermédiaire du store jour/nuit non sélectionnée",
       "description": "**{name}** est configuré comme store jour/nuit à deux barres, mais la protection de la barre intermédiaire n'est pas sélectionnée — ou fait référence à une protection qui ne figure pas dans la liste des protections de cette instance. Les deux barres reçoivent la même position, le store se comporte donc comme une simple protection et le mélange voilage/occultant ne sera jamais appliqué. Sélectionnez la protection de la barre intermédiaire dans les options de cette protection, et assurez-vous qu'elle figure aussi parmi les protections contrôlées."
+    },
+    "duplicate_device": {
+      "title": "Appareil résiduel d'une version antérieure",
+      "fix_flow": {
+        "step": {
+          "confirm": {
+            "title": "Supprimer l'appareil résiduel",
+            "description": "L'appareil **{device_name}** appartient à **{name}** mais ne contient plus aucune de ses entités. Les versions antérieures d'Adaptive Cover Pro ont laissé cet enregistrement lorsqu'elles ont lié une protection à son appareil physique ; **{name}** dispose maintenant de son propre appareil, et tout y a déjà été transféré. La suppression de **{device_name}** ne supprime que l'enregistrement vide — aucune entité, automatisation ou carte de tableau de bord n'est affectée. S'il s'avère que quelque chose est toujours attaché, ce processus s'arrêtera et vous l'indiquera au lieu de supprimer quoi que ce soit."
+          }
+        },
+        "abort": {
+          "device_in_use": "L'appareil n'a pas été supprimé : il ne correspond plus à ce que cette réparation attendait. Soit il a déjà été supprimé, soit il contient maintenant des entités, soit il appartient à une autre intégration. Rien n'a été modifié. Rechargez Adaptive Cover Pro pour le revérifier, et cet avertissement disparaît de lui-même une fois que l'élément résiduel est supprimé."
+        }
+      }
     }
   },
   "config": {
@@ -140,7 +154,8 @@
           "day_night_concurrent_rail_travel": "Déplacer les deux rails ensemble (modèle double entité)",
           "day_night_external_command_interlock": "Corriger les commandes de rail inaccessibles (modèle double entité)",
           "dual_panel_front_entity": "Entité du panneau avant (voile)",
-          "dual_panel_blackout_triggers": "Déclencheurs du déploiement de l'occultant"
+          "dual_panel_blackout_triggers": "Déclencheurs du déploiement de l'occultant",
+          "tilt_min_reflected_elevation": "Angle minimum du soleil réfléchi"
         },
         "data_description": {
           "window_height": "Hauteur de votre fenêtre (de bas en haut de la zone vitrée). Affiché dans l'unité configurée dans Home Assistant. Exemples : Porte standard = 2,0 m / 79 in, Petite fenêtre = 1,5 m / 59 in, Du sol au plafond = 2,5 m / 98 in. Mesurez d'où la protection commence à d'où elle finit lorsqu'elle est complètement étendue.",
@@ -206,7 +221,8 @@
           "day_night_concurrent_rail_travel": "Pour le modèle **Deux entités de rail** uniquement : si les deux rails peuvent se déplacer au même moment. **Désactivé (par défaut, recommandé) :** le rail suivant attend que le rail de tête ait complètement quitté sa position cible avant de se déplacer du tout. Plus lent — le store prend deux temps de déplacement au lieu d'un — mais toujours correct, car il agit sur une position qu'il a réellement lue plutôt que sur une inférence qu'un moteur a démarré. **Activé :** le rail suivant démarre dès que le rail de tête est confirmé en mouvement et le devance, de sorte que le store atteigne sa position en un seul temps de déplacement. ⚠️ **Pour les utilisateurs expérimentés uniquement — ce paramètre est à l'origine de la plupart des problèmes de rail double signalés.** Confirmer que le rail de tête a démarré dépend de vos moteurs publiant un état `opening`/`closing`, ou des positions intermédiaires, pendant qu'ils se déplacent. Beaucoup ne publient ni l'un ni l'autre : certains ne signalent rien du tout entre la commande et leur arrivée, ce qui laisse Adaptive Cover Pro déduire un mouvement qu'elle ne peut pas voir. Quand cette déduction est incorrecte, le rail suivant est libéré dans un rail qui n'a pas bougé, ce qui peut bloquer un moteur, déclencher sa protection contre les surintensités, ou perdre son étalonnage. Activez ceci uniquement si vous pouvez regarder vos propres rails et confirmer qu'ils maintiennent leur séparation pour tout le déplacement.",
           "day_night_external_command_interlock": "Pour le modèle **Deux entités de rail** uniquement : ce qui se passe quand une commande demande à un rail de se déplacer dans l'espace occupé par l'autre rail. Deux types de commandes aboutissent là. Une commande envoyée **directement à une entité de rail** — depuis un tableau de bord, un script ou une télécommande — ne passe jamais par Adaptive Cover Pro du tout, donc rien ne la séquence et le moteur la refuse ou se bloque à mi-course. Une commande envoyée **par Adaptive Cover Pro** — le curseur par rail de la carte, les services `set_position` / `set_axes`, le store proxy optionnel, le bouton My Position — est retenue par la vérification de dégagement des rails à la place, ce qui est sûr mais signifie que rien ne bouge. **Activé** (par défaut) : le rail bloquant est d'abord écarté de la voie et votre commande est ensuite réémise afin qu'elle se termine réellement ; les deux rails passent ensuite en dérogation manuelle. ⚠️ Cela signifie qu'Adaptive Cover Pro peut déplacer le rail que vous n'avez pas commandé. **Désactivé** : la commande reste exactement telle qu'elle a été envoyée — elle peut tout simplement ne pas atteindre sa cible, ou ne pas se produire du tout — et un avertissement est journalisé. Le suivi solaire automatique n'a jamais besoin de ceci : il élabore les deux rails à partir d'une position et les déplace ensemble, il ne demande donc jamais un endroit où un rail ne peut pas atteindre.",
           "dual_panel_front_entity": "Quel store de cette instance est le panneau **avant / voile**. Il suit le soleil comme un store vertical simple. Tous les autres stores configurés sont le panneau **arrière / occultant**. Laissez non défini pour fonctionner comme un store vertical simple.",
-          "dual_panel_blackout_triggers": "Quand le panneau **occultant** arrière se déploie (se ferme). **Chaleur** : un été climatique / blocage total chaleur extrême. **Confidentialité** : la fenêtre du coucher du soleil. **Nuit** : le soleil est sous l'horizon. Sélectionnez n'importe quelle combinaison — l'arrière se rétracte (s'ouvre) chaque fois qu'aucun des déclencheurs sélectionnés n'est actif. Les deux panneaux sont indépendants (aucun couplage no-pass)."
+          "dual_panel_blackout_triggers": "Quand le panneau **occultant** arrière se déploie (se ferme). **Chaleur** : un été climatique / blocage total chaleur extrême. **Confidentialité** : la fenêtre du coucher du soleil. **Nuit** : le soleil est sous l'horizon. Sélectionnez n'importe quelle combinaison — l'arrière se rétracte (s'ouvre) chaque fois qu'aucun des déclencheurs sélectionnés n'est actif. Les deux panneaux sont indépendants (aucun couplage no-pass).",
+          "tilt_min_reflected_elevation": "Empêche le soleil réfléchi par la face supérieure des lamelles d'entrer dans la pièce. Quand le soleil est haut, la lamelle optimale en lumière du jour élève son bord extérieur et les lamelles deviennent un miroir dirigé vers la pièce — plus visible avec du verre du sol au plafond. Définissez l'angle minimum au-dessus de l'horizontale auquel le rayon réfléchi peut s'échapper, en degrés : les lamelles sont inclinées en arrière vers (ou au-delà de) l'horizontale juste assez pour l'atteindre, et ne sont jamais ouvertes au-delà de la limite du soleil direct. 0 = désactivé (par défaut). Pour déterminer une valeur, trouvez le lieu le plus proche où quelqu'un pourrait s'asseoir ou se tenir, et divisez la hauteur des yeux au-dessus du rebord de la fenêtre par la distance au verre : 1,2 m à 2 m ≈ 31°, 1,7 m à 1 m ≈ 60°. Commencez autour de 30° et augmentez-la si les reflets atteignent toujours la hauteur des yeux. Inclinaison Minimale des Lamelles s'applique après et peut réouvrir les lamelles au-delà de ce plafond — gardez ce plancher bas, sinon la réflexion revient."
         }
       },
       "duplicate_select": {
@@ -411,7 +427,9 @@
           "end_entity": "Entité indiquant l'heure de fin",
           "minimize_movements": "Minimiser les mouvements",
           "max_coverage_steps": "Étapes de couverture maximale",
-          "command_queue": "File d'attente de commandes"
+          "command_queue": "File d'attente de commandes",
+          "snap_closed_below": "Fermeture rapide sous seuil",
+          "snap_closed_threshold": "Seuil de fermeture rapide"
         },
         "data_description": {
           "delta_position": "Changement de position minimum (%) requis avant d'ajuster le store. Empêche les minuscules ajustements tandis que le soleil se déplace lentement. Valeurs typiques : 1-2% (très réactif, peut ajuster fréquemment), 5% (équilibré, recommandé pour la plupart), 10% (moins fréquent, mouvements plus importants). Exemple : Si le store est à 30% et le soleil se déplace légèrement, n'ajustez que si la nouvelle position est 35% ou plus (avec un seuil de 5%). Réduit l'usure du moteur et le bruit des minuscules ajustements constants.",
@@ -422,7 +440,9 @@
           "end_entity": "Entité représentant l'état de l'heure de fin, remplaçant l'heure de fin fixe définie ci-dessus. Utile pour automatiser l'heure de fin avec une entité (par ex., un capteur qui fournit l'heure du coucher basée sur le calendrier ou la routine quotidienne).",
           "minimize_movements": "Réduisez la fréquence à laquelle le store se repositionne tout en suivant le soleil en accrochant à quelques niveaux de couverture fixes au lieu de suivre le soleil en continu. L'arrondi se fait vers PLUS de couverture, donc le soleil direct n'est jamais laissé entrer par l'arrondi. Échange un peu de lumière naturelle pour beaucoup moins de mouvements moteur. Par défaut : désactivé.",
           "max_coverage_steps": "Combien de positions distinctes le store peut utiliser sur son chemin vers une couverture complète lorsque 'Minimiser les mouvements' est activé (1-10). 1 = saut direct vers la couverture complète dès que le soleil entre dans l'angle d'ouverture solaire et maintien jusqu'à ce qu'il le quitte (moins de mouvements). Les valeurs supérieures trackent le soleil plus graduellement en ce nombre d'étapes. Par défaut : 1.",
-          "command_queue": "Sérialiser les commandes de cette protection par rapport aux autres protections assignées au même nom de file d'attente. Les protections partageant une file d'attente ne transmettent jamais au même moment — utile pour les backends radio unidirectionnels (Somfy RTS, RFXtrx) où les commandes simultanées entrent en collision et sont perdues. L'intervalle entre les commandes est défini dans l'entrée File d'attente de commandes portant le même nom, ou par défaut 5 secondes si aucune n'existe. Laissez vide pour aucune file d'attente (par défaut)."
+          "command_queue": "Sérialiser les commandes de cette protection par rapport aux autres protections assignées au même nom de file d'attente. Les protections partageant une file d'attente ne transmettent jamais au même moment — utile pour les backends radio unidirectionnels (Somfy RTS, RFXtrx) où les commandes simultanées entrent en collision et sont perdues. L'intervalle entre les commandes est défini dans l'entrée File d'attente de commandes portant le même nom, ou par défaut 5 secondes si aucune n'existe. Laissez vide pour aucune file d'attente (par défaut).",
+          "snap_closed_below": "Quand une position de suivi solaire est à peine ouverte (une petite demande non-nulle sous le seuil ci-dessous), l'envoyer complètement fermée au lieu de laisser une fente de lumière difficile à voir. Affecte uniquement les positions de suivi solaire ; une position minimale active gagne toujours sur la fermeture rapide. Par défaut : désactivé.",
+          "snap_closed_threshold": "À quel pourcentage de fermeture complète (%) une demande de suivi solaire doit être avant que « Fermeture rapide sous seuil » la tire jusqu'à l'extrémité fermée (1-50). S'applique uniquement tant qu'il reste un espace à fermer — une position déjà fermée n'est pas modifiée. Par défaut : 10%."
         }
       },
       "change_cover_type": {
@@ -530,7 +550,8 @@
           "day_night_concurrent_rail_travel": "Déplacer les deux rails ensemble (modèle double entité)",
           "day_night_external_command_interlock": "Corriger les commandes de rail inaccessibles (modèle double entité)",
           "dual_panel_front_entity": "Entité du panneau avant (voile)",
-          "dual_panel_blackout_triggers": "Déclencheurs du déploiement de l'occultant"
+          "dual_panel_blackout_triggers": "Déclencheurs du déploiement de l'occultant",
+          "tilt_min_reflected_elevation": "Angle minimum du soleil réfléchi"
         },
         "data_description": {
           "window_height": "Hauteur de votre fenêtre (de bas en haut de la zone vitrée). Affiché dans l'unité configurée dans Home Assistant. Exemples : Porte standard = 2,0 m / 79 in, Petite fenêtre = 1,5 m / 59 in, Du sol au plafond = 2,5 m / 98 in. Mesurez d'où la protection commence à d'où elle finit lorsqu'elle est complètement étendue.",
@@ -596,7 +617,8 @@
           "day_night_concurrent_rail_travel": "Pour le modèle **Deux entités de rail** uniquement : si les deux rails peuvent se déplacer au même moment. **Désactivé (par défaut, recommandé) :** le rail suivant attend que le rail de tête ait complètement quitté sa position cible avant de se déplacer du tout. Plus lent — le store prend deux temps de déplacement au lieu d'un — mais toujours correct, car il agit sur une position qu'il a réellement lue plutôt que sur une inférence qu'un moteur a démarré. **Activé :** le rail suivant démarre dès que le rail de tête est confirmé en mouvement et le devance, de sorte que le store atteigne sa position en un seul temps de déplacement. ⚠️ **Pour les utilisateurs expérimentés uniquement — ce paramètre est à l'origine de la plupart des problèmes de rail double signalés.** Confirmer que le rail de tête a démarré dépend de vos moteurs publiant un état `opening`/`closing`, ou des positions intermédiaires, pendant qu'ils se déplacent. Beaucoup ne publient ni l'un ni l'autre : certains ne signalent rien du tout entre la commande et leur arrivée, ce qui laisse Adaptive Cover Pro déduire un mouvement qu'elle ne peut pas voir. Quand cette déduction est incorrecte, le rail suivant est libéré dans un rail qui n'a pas bougé, ce qui peut bloquer un moteur, déclencher sa protection contre les surintensités, ou perdre son étalonnage. Activez ceci uniquement si vous pouvez regarder vos propres rails et confirmer qu'ils maintiennent leur séparation pour tout le déplacement.",
           "day_night_external_command_interlock": "Pour le modèle **Deux entités de rail** uniquement : ce qui se passe quand une commande demande à un rail de se déplacer dans l'espace occupé par l'autre rail. Deux types de commandes aboutissent là. Une commande envoyée **directement à une entité de rail** — depuis un tableau de bord, un script ou une télécommande — ne passe jamais par Adaptive Cover Pro du tout, donc rien ne la séquence et le moteur la refuse ou se bloque à mi-course. Une commande envoyée **par Adaptive Cover Pro** — le curseur par rail de la carte, les services `set_position` / `set_axes`, le store proxy optionnel, le bouton My Position — est retenue par la vérification de dégagement des rails à la place, ce qui est sûr mais signifie que rien ne bouge. **Activé** (par défaut) : le rail bloquant est d'abord écarté de la voie et votre commande est ensuite réémise afin qu'elle se termine réellement ; les deux rails passent ensuite en dérogation manuelle. ⚠️ Cela signifie qu'Adaptive Cover Pro peut déplacer le rail que vous n'avez pas commandé. **Désactivé** : la commande reste exactement telle qu'elle a été envoyée — elle peut tout simplement ne pas atteindre sa cible, ou ne pas se produire du tout — et un avertissement est journalisé. Le suivi solaire automatique n'a jamais besoin de ceci : il élabore les deux rails à partir d'une position et les déplace ensemble, il ne demande donc jamais un endroit où un rail ne peut pas atteindre.",
           "dual_panel_front_entity": "Quel store de cette instance est le panneau **avant / voile**. Il suit le soleil comme un store vertical simple. Tous les autres stores configurés sont le panneau **arrière / occultant**. Laissez non défini pour fonctionner comme un store vertical simple.",
-          "dual_panel_blackout_triggers": "Quand le panneau **occultant** arrière se déploie (se ferme). **Chaleur** : un été climatique / blocage total chaleur extrême. **Confidentialité** : la fenêtre du coucher du soleil. **Nuit** : le soleil est sous l'horizon. Sélectionnez n'importe quelle combinaison — l'arrière se rétracte (s'ouvre) chaque fois qu'aucun des déclencheurs sélectionnés n'est actif. Les deux panneaux sont indépendants (aucun couplage no-pass)."
+          "dual_panel_blackout_triggers": "Quand le panneau **occultant** arrière se déploie (se ferme). **Chaleur** : un été climatique / blocage total chaleur extrême. **Confidentialité** : la fenêtre du coucher du soleil. **Nuit** : le soleil est sous l'horizon. Sélectionnez n'importe quelle combinaison — l'arrière se rétracte (s'ouvre) chaque fois qu'aucun des déclencheurs sélectionnés n'est actif. Les deux panneaux sont indépendants (aucun couplage no-pass).",
+          "tilt_min_reflected_elevation": "Empêche le soleil réfléchi par la face supérieure des lamelles d'entrer dans la pièce. Quand le soleil est haut, la lamelle optimale en lumière du jour élève son bord extérieur et les lamelles deviennent un miroir dirigé vers la pièce — plus visible avec du verre du sol au plafond. Définissez l'angle minimum au-dessus de l'horizontale auquel le rayon réfléchi peut s'échapper, en degrés : les lamelles sont inclinées en arrière vers (ou au-delà de) l'horizontale juste assez pour l'atteindre, et ne sont jamais ouvertes au-delà de la limite du soleil direct. 0 = désactivé (par défaut). Pour déterminer une valeur, trouvez le lieu le plus proche où quelqu'un pourrait s'asseoir ou se tenir, et divisez la hauteur des yeux au-dessus du rebord de la fenêtre par la distance au verre : 1,2 m à 2 m ≈ 31°, 1,7 m à 1 m ≈ 60°. Commencez autour de 30° et augmentez-la si les reflets atteignent toujours la hauteur des yeux. Inclinaison Minimale des Lamelles s'applique après et peut réouvrir les lamelles au-delà de ce plafond — gardez ce plancher bas, sinon la réflexion revient."
         }
       },
       "sun_tracking": {
@@ -935,11 +957,13 @@
           "cloud_coverage_threshold": "Seuil de couverture nuageuse",
           "cloud_suppression": "Activer la suppression des nuages (interrupteur principal)",
           "cloudy_position": "Position nuageux (optionnel)",
+          "cloudy_tilt": "Inclinaison nuageuse des lamelles (optionnel)",
           "lux_release_threshold": "Seuil de libération de lux (optionnel)",
           "irradiance_release_threshold": "Seuil de libération du rayonnement (optionnel)",
           "cloud_coverage_release_threshold": "Seuil de libération de la couverture nuageuse (optionnel)",
           "cloud_suppression_hold_time": "Temps de maintien de lissage",
-          "weather_state": "Conditions météorologiques"
+          "weather_state": "Conditions météorologiques",
+          "cloud_escalation_delay": "Ouverture complète après (optionnel)"
         },
         "data_description": {
           "weather_entity": "Intégration météo optionnelle utilisée pour détecter la couverture nuageuse. Quand l'état météo actuel ne figure pas dans la liste sélectionnée ci-dessous, le soleil direct est supposé absent et le contrôle de l'éblouissement est supprimé. Laissez vide pour ignorer l'état météo.",
@@ -956,10 +980,12 @@
           "cloud_coverage_threshold": "Pourcentage de couverture nuageuse à partir duquel la suppression de l'éblouissement est désactivée. Par exemple, 75 signifie que la protection cesse de suivre le soleil quand le ciel est couvert à 75 % ou plus. Accepte un nombre fixe ou un modèle Jinja2 Home Assistant qui évalue à un nombre, réévalué à chaque cycle de mise à jour.",
           "cloud_suppression": "Interrupteur principal de cet écran entier. Lorsqu'il est **désactivé** (par défaut), tous les capteurs ci-dessous sont ignorés et le contrôle de l'éblouissement fonctionne normalement. Lorsqu'il est **activé**, tout capteur configuré (état météorologique, luminosité, rayonnement ou couverture nuageuse) indiquant l'absence du soleil arrêtera le suivi du soleil et déplacera la protection vers la **position nuageuse** ci-dessus (ou la position par défaut si celle-ci est vide). Fonctionne seul — le mode climatique n'a pas besoin d'être activé.",
           "cloudy_position": "Position (0-100%) pour déplacer les protections lorsque la suppression nuageuse se déclenche (conditions nuageuses / faible luminosité). 0% = fermé (stores baissés / store banne rétracté), 100% = ouvert (stores levés / store banne déployé). Laissez vide pour utiliser la position par défaut.",
+          "cloudy_tilt": "Inclinaison des lamelles (0-100%) pour commander lors de la suppression nuageuse. 0% = lamelles fermées, 100% = lamelles ouvertes. Laissez vide pour conserver l'inclinaison actuelle des lamelles, ce qui est le comportement avant cette option. Proposé uniquement sur les types de protection avec un axe de lamelles indépendant.",
           "lux_release_threshold": "Seuil d'hystérésis optionnel. Une fois la suppression active, la maintenir active jusqu'à ce que le lux augmente à au moins cette valeur — au lieu de la désactiver dès que le lux remonte au-dessus du seuil de lux. Définissez-la à une valeur confortablement supérieure au seuil de lux pour éviter que la protection ne clignote quand la lecture oscille autour d'un point de croisement unique. Laissez vide pour désactiver l'hystérésis (libération au seuil de lux). Accepte un nombre fixe ou un modèle Jinja2 Home Assistant.",
           "irradiance_release_threshold": "Seuil d'hystérésis optionnel. Une fois la suppression active, la maintenir active jusqu'à ce que le rayonnement augmente à au moins cette valeur — au lieu de la désactiver dès qu'il remonte au-dessus du seuil de rayonnement. Définissez-le à une valeur supérieure au seuil de rayonnement pour éviter le clignotement autour d'un point de croisement unique. Laissez vide pour désactiver l'hystérésis. Accepte un nombre fixe ou un modèle Jinja2 Home Assistant.",
           "cloud_coverage_release_threshold": "Seuil d'hystérésis optionnel. Une fois la suppression active, la maintenir active jusqu'à ce que la couverture nuageuse tombe à cette valeur ou en dessous — au lieu de la désactiver dès qu'elle passe sous le seuil de couverture nuageuse. Définissez-le à une valeur inférieure au seuil de couverture nuageuse pour éviter le clignotement autour d'un point de croisement unique. Laissez vide pour désactiver l'hystérésis. Accepte un nombre fixe ou un modèle Jinja2 Home Assistant.",
-          "cloud_suppression_hold_time": "Secondes pendant lesquelles un changement dans la décision de suppression doit persister avant de prendre effet. Cela élimine les rebonds des brefs passages nuageux et des brèves éclaircies pour que la protection ne se déplace pas à chaque nuage qui passe. 0 (par défaut) applique les changements immédiatement. Le même délai s'applique dans les deux directions — début et fin de la suppression."
+          "cloud_suppression_hold_time": "Secondes pendant lesquelles un changement dans la décision de suppression doit persister avant de prendre effet. Cela élimine les rebonds des brefs passages nuageux et des brèves éclaircies pour que la protection ne se déplace pas à chaque nuage qui passe. 0 (par défaut) applique les changements immédiatement. Le même délai s'applique dans les deux directions — début et fin de la suppression.",
+          "cloud_escalation_delay": "Ceci n'est PAS le temps de maintien de lissage. Le temps de maintien de lissage détermine la rapidité de la suppression des nuages ; ceci détermine la durée de son maintien. Une fois que la suppression des nuages s'est maintenue de façon continue pendant cette durée, la protection s'ouvre complètement au lieu de rester à sa position nuageuse et son angle de lamelle. Sur un store vénitien à inclinaison seule, le chariot s'ouvre également. Laissez vide (ou tous les zéros) pour maintenir tant que les nuages durent. Un bref ensoleillement réinitialise cette horloge — utilisez le temps de maintien de lissage ci-dessous pour surmonter les courtes pauses."
         }
       },
       "temperature_climate": {
@@ -1236,7 +1262,68 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "sun_motion": {
+        "name": "Soleil devant"
+      },
+      "manual_override": {
+        "name": "Dérogation manuelle"
+      },
+      "glare_active": {
+        "name": "Éblouissement actif"
+      },
+      "position_mismatch": {
+        "name": "Écart de position"
+      }
+    },
     "sensor": {
+      "target_position": {
+        "name": "Position cible"
+      },
+      "target_tilt": {
+        "name": "Inclinaison cible"
+      },
+      "start_sun": {
+        "name": "Début du soleil"
+      },
+      "end_sun": {
+        "name": "Fin du soleil"
+      },
+      "sun_position": {
+        "name": "Position du soleil"
+      },
+      "last_skipped_action": {
+        "name": "Dernière action ignorée",
+        "state": {
+          "no_action_skipped": "Aucune action ignorée",
+          "integration_disabled": "Intégration désactivée",
+          "auto_control_off": "Contrôle automatique désactivé",
+          "same_position": "Même position",
+          "delta_too_small": "Écart de position trop faible",
+          "time_delta_too_small": "Écart de temps trop faible",
+          "manual_override": "Dérogation manuelle active",
+          "no_capable_service": "Aucun service compatible",
+          "dry_run": "Simulation",
+          "service_call_failed": "Échec de l'appel du service",
+          "cover_unavailable": "Store indisponible",
+          "policy_deferred": "Reporté par la politique du store",
+          "calibration_in_progress": "Étalonnage en cours",
+          "superseded_in_queue": "Remplacé dans la file de commandes",
+          "preempted_by_handler": "Devancé par un autre gestionnaire",
+          "hold": "Maintenu",
+          "manual_override_hold": "Maintien par dérogation manuelle",
+          "motion_hold": "Maintien par occupation"
+        }
+      },
+      "last_cover_action": {
+        "name": "Dernière action du store"
+      },
+      "manual_override_end_time": {
+        "name": "Fin de la dérogation manuelle"
+      },
+      "position_verification": {
+        "name": "Vérification de position"
+      },
       "solar_calculation": {
         "name": "Calcul solaire"
       },
@@ -1244,12 +1331,23 @@
         "name": "Apport solaire estimé"
       },
       "control_status": {
+        "name": "État du contrôle",
         "state": {
+          "active": "Actif",
+          "calibrating": "Étalonnage en cours",
+          "outside_time_window": "Hors plage horaire",
+          "position_delta_too_small": "Écart de position trop faible",
+          "time_delta_too_small": "Écart de temps trop faible",
+          "manual_override": "Dérogation manuelle",
+          "automatic_control_off": "Contrôle automatique désactivé",
+          "sun_not_visible": "Soleil non visible",
           "force_override_active": "Dérogation forcée active",
+          "weather_override_active": "Dérogation météo active",
           "motion_timeout": "Délai d'occupation"
         }
       },
       "motion_status": {
+        "name": "État de l'occupation",
         "state": {
           "not_configured": "Non configuré",
           "motion_detected": "Occupation détectée",
@@ -1260,6 +1358,7 @@
         }
       },
       "climate_status": {
+        "name": "État climatique",
         "state": {
           "summer_mode": "Mode été",
           "winter_mode": "Mode hiver",
@@ -1326,6 +1425,9 @@
           "failed": "Échoué",
           "cancelled": "Annulé"
         }
+      },
+      "cloud_escalation_end_time": {
+        "name": "Heure de fin d'escalade nuageuse"
       }
     },
     "switch": {
@@ -1387,6 +1489,9 @@
       }
     },
     "button": {
+      "reset_manual_override": {
+        "name": "Réinitialiser la dérogation manuelle"
+      },
       "my_position": {
         "name": "Position My gérée"
       },
@@ -1948,9 +2053,17 @@
           "name": "Activer la suppression des nuages",
           "description": "Supprimer le positionnement solaire lorsque la couverture nuageuse dépasse le seuil."
         },
+        "cloudy_tilt": {
+          "name": "Inclinaison nuageuse des lamelles",
+          "description": "Inclinaison des lamelles à définir lors de la suppression nuageuse (0–100%). 0% = lamelles fermées, 100% = lamelles ouvertes. Stores vénitiens uniquement ; null = ne pas modifier les lamelles."
+        },
         "is_sunny_sensor": {
           "name": "Capteur binaire « Ensoleillé »",
           "description": "Entité binaire qui rapporte de manière fiable le soleil-sur-fenêtre. ACTIVÉ = ensoleillé, DÉSACTIVÉ = suppression des nuages se déclenche. Indisponible revient à l'état météorologique. Nul = aucun."
+        },
+        "cloud_escalation_delay": {
+          "name": "Ouverture complète après",
+          "description": "Durée pendant laquelle la suppression des nuages peut maintenir avant que la protection s'ouvre complètement. Pas le temps de maintien de lissage : celui-ci détermine la rapidité de l'engagement de la suppression, celui-ci détermine la durée de son maintien. Null ou tous les zéros = maintenir tant que les nuages durent."
         }
       }
     },

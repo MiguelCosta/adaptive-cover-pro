@@ -312,7 +312,7 @@ class TestExpiryFor:
 
         assert seen == [start, start]
 
-    def test_reset_clears_both_dicts(self):
+    def test_reset_clears_the_pin_with_the_override(self):
         """Expiry bookkeeping must not outlive the override it describes."""
         mgr = _manager()
         mgr.engage_override(
@@ -321,12 +321,11 @@ class TestExpiryFor:
             duration=None,
             reason="service",
         )
-        assert mgr.manual_control_expiry.get("cover.x") is not None
+        assert mgr.override_for("cover.x").expiry is not None
 
         mgr.reset("cover.x")
 
-        assert "cover.x" not in mgr.manual_control_time
-        assert "cover.x" not in mgr.manual_control_expiry
+        assert mgr.override_for("cover.x") is None
         assert mgr.expiry_for("cover.x") is None
 
     def test_naive_anchor_is_normalised_to_utc(self):
@@ -352,10 +351,10 @@ class TestExpiryFor:
         start = dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
         mgr.set_last_updated("cover.x", _state(start), allow_reset=True)
 
-        assert "cover.x" not in mgr.manual_control_expiry
+        assert mgr.override_for("cover.x").expiry is None
         assert mgr.expiry_for("cover.x") == start + dt.timedelta(hours=2)
 
-    def test_allow_reset_false_does_not_extend_either_dict(self):
+    def test_allow_reset_false_does_not_extend_start_or_end(self):
         """``allow_reset=False`` keeps the original start AND the original end."""
         mgr = _manager(reset_duration={"hours": 2})
         start = dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
@@ -365,25 +364,25 @@ class TestExpiryFor:
         later = start + dt.timedelta(minutes=45)
         mgr.set_last_updated("cover.x", _state(later), allow_reset=False)
 
-        assert mgr.manual_control_time["cover.x"] == start
+        assert mgr.override_for("cover.x").started_at == start
         assert mgr.expiry_for("cover.x") == first_expiry
 
     def test_mark_user_command_does_not_extend_the_window(self):
-        """Successive proxy drags keep the first start (``setdefault`` semantics)."""
+        """Successive proxy drags keep the first start (do-not-extend semantics)."""
         mgr = _manager(reset_duration={"hours": 2})
         start = dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
         mgr.set_last_updated("cover.x", _state(start), allow_reset=True)
 
         mgr.mark_user_command("cover.x", reason="proxy_managed")
 
-        assert mgr.manual_control_time["cover.x"] == start
+        assert mgr.override_for("cover.x").started_at == start
         assert mgr.expiry_for("cover.x") == start + dt.timedelta(hours=2)
 
 
 class TestResetIfNeeded:
     """The expiry poll compares ``now`` against ``expiry_for()``, strictly."""
 
-    async def test_fixed_mode_boundary_is_strictly_greater_not_gte(self):
+    def test_fixed_mode_boundary_is_strictly_greater_not_gte(self):
         """At exactly ``start + duration`` the override still holds.
 
         The byte-identical translation of the legacy
@@ -392,17 +391,16 @@ class TestResetIfNeeded:
         mgr = _manager(reset_duration={"hours": 2})
         start = dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
         mgr.set_last_updated("cover.x", _state(start), allow_reset=True)
-        mgr.mark_manual_control("cover.x")
 
         with freeze_time("2026-07-02 14:00:00"):
-            assert await mgr.reset_if_needed() == set()
+            assert mgr.reset_if_needed() == set()
         assert mgr.is_cover_manual("cover.x") is True
 
         with freeze_time("2026-07-02 14:00:01"):
-            assert await mgr.reset_if_needed() == {"cover.x"}
+            assert mgr.reset_if_needed() == {"cover.x"}
         assert mgr.is_cover_manual("cover.x") is False
 
-    async def test_sun_mode_does_not_expire_before_the_deadline(self):
+    def test_sun_mode_does_not_expire_before_the_deadline(self):
         """A sun deadline outlives the numeric duration it replaces."""
         mgr = _manager(reset_duration={"hours": 2})
         sunset = dt.datetime(2026, 7, 2, 21, 0, tzinfo=dt.UTC)
@@ -410,17 +408,16 @@ class TestResetIfNeeded:
         mgr.set_last_updated(
             "cover.x", _state(dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.x")
 
         # 6 h in — three times the fixed duration, still held.
         with freeze_time("2026-07-02 18:00:00"):
-            assert await mgr.reset_if_needed() == set()
+            assert mgr.reset_if_needed() == set()
         # And at the deadline itself, still held (strictly-after rule).
         with freeze_time("2026-07-02 21:00:00"):
-            assert await mgr.reset_if_needed() == set()
+            assert mgr.reset_if_needed() == set()
         assert mgr.is_cover_manual("cover.x") is True
 
-    async def test_sun_mode_expires_at_the_resolved_deadline(self):
+    def test_sun_mode_expires_at_the_resolved_deadline(self):
         """Past the resolved deadline the override clears like any other."""
         mgr = _manager(reset_duration={"hours": 2})
         sunset = dt.datetime(2026, 7, 2, 21, 0, tzinfo=dt.UTC)
@@ -428,13 +425,12 @@ class TestResetIfNeeded:
         mgr.set_last_updated(
             "cover.x", _state(dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.x")
 
         with freeze_time("2026-07-02 21:00:01"):
-            assert await mgr.reset_if_needed() == {"cover.x"}
+            assert mgr.reset_if_needed() == {"cover.x"}
 
         assert mgr.is_cover_manual("cover.x") is False
-        assert "cover.x" not in mgr.manual_control_time
+        assert mgr.override_for("cover.x") is None
 
 
 # ---------------------------------------------------------------------------
@@ -451,21 +447,37 @@ def _coordinator(
 ):
     """Return a coordinator stub with only what ``_resolve_override_deadline`` reads."""
     from custom_components.adaptive_cover_pro.config_types import RuntimeConfig
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_END_ENTITY,
+        CONF_END_TIME,
+    )
     from custom_components.adaptive_cover_pro.coordinator import (
         AdaptiveDataUpdateCoordinator,
     )
+    from custom_components.adaptive_cover_pro.helpers import has_configured_window_end
 
+    rc = RuntimeConfig.from_options(options)
     coord = MagicMock()
     coord.config_entry.options = options
     # The duration mode reaches the resolver through the per-cycle
     # ``RuntimeConfig`` mirror, never the options dict (issue #1051) — publish
     # it here exactly as ``_update_options`` does.
-    coord.manual_override_duration_mode = RuntimeConfig.from_options(
-        options
-    ).manual_override.duration_mode
+    coord.manual_override_duration_mode = rc.manual_override.duration_mode
     coord.logger = MagicMock()
     coord._cover_data = None if sun_data is None else MagicMock(sun_data=sun_data)
     coord._time_mgr.end_time = window_end
+    # The window-end PREDICATE comes off the manager too (issue #1061), so it
+    # has to be published here as well — and derived the way ``_update_options``
+    # → ``update_config`` does, out of the ``TimeWindowSlice``. A bare
+    # ``MagicMock`` attribute is truthy, which would silently read as "an end
+    # bound is configured" for every stub and defeat the #1044 ``BLANK_TIME``
+    # guard that ``TestBlankWindowEnd`` exists to hold.
+    coord._time_mgr.has_configured_end = has_configured_window_end(
+        {
+            CONF_END_TIME: rc.time_window.end_time,
+            CONF_END_ENTITY: rc.time_window.end_time_entity,
+        }
+    )
     coord.hass.states.get.return_value = (
         None if time_entity_state is None else MagicMock(state=time_entity_state)
     )
@@ -554,10 +566,10 @@ class TestCoordinatorResolver:
     def test_resolver_uses_window_end_from_time_window_manager(self):
         """``until_window_end`` reads the resolved end, not the raw option string.
 
-        The raw option is still what says a window end *exists* — a non-``None``
-        ``TimeWindowManager.end_time`` is only reachable when one of the two end
-        keys is set — but the instant itself comes from the manager, entity
-        resolution and all.
+        The manager supplies both halves: whether a window end exists at all
+        (``has_configured_end``) and the instant itself, entity resolution and
+        all. Before #1061 the "exists?" half was a live read of the raw
+        options while the instant came from the slice mirror.
         """
         from custom_components.adaptive_cover_pro.const import (
             CONF_END_TIME,
@@ -842,7 +854,7 @@ class TestBlankWindowEnd:
 
         assert deadline == dt.datetime(2026, 7, 2, 19, 0, tzinfo=dt.UTC)
 
-    async def test_blank_end_override_expires_after_the_numeric_duration(self):
+    def test_blank_end_override_expires_after_the_numeric_duration(self):
         """The ship-blocker: the hold must not suspend auto-control forever."""
         coord = _blank_end_coordinator()
         mgr = _manager(["cover.x"], reset_duration={"hours": 2})
@@ -850,17 +862,16 @@ class TestBlankWindowEnd:
         mgr.set_last_updated(
             "cover.x", _state(dt.datetime(2026, 7, 2, 10, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.x")
 
         with (
             patch("homeassistant.util.dt.DEFAULT_TIME_ZONE", dt.UTC),
             freeze_time("2026-07-02 12:00:01"),
         ):
-            assert await mgr.reset_if_needed() == {"cover.x"}
+            assert mgr.reset_if_needed() == {"cover.x"}
 
         assert mgr.is_cover_manual("cover.x") is False
 
-    async def test_blank_end_override_holds_until_the_numeric_duration(self):
+    def test_blank_end_override_holds_until_the_numeric_duration(self):
         """Falling back to ``fixed`` must not shorten the hold either."""
         coord = _blank_end_coordinator()
         mgr = _manager(["cover.x"], reset_duration={"hours": 2})
@@ -868,13 +879,12 @@ class TestBlankWindowEnd:
         mgr.set_last_updated(
             "cover.x", _state(dt.datetime(2026, 7, 2, 10, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.x")
 
         with (
             patch("homeassistant.util.dt.DEFAULT_TIME_ZONE", dt.UTC),
             freeze_time("2026-07-02 11:59:59"),
         ):
-            assert await mgr.reset_if_needed() == set()
+            assert mgr.reset_if_needed() == set()
 
         assert mgr.is_cover_manual("cover.x") is True
 
@@ -998,8 +1008,8 @@ class TestSliceIsTheSingleModeSource:
         """The end-time sensor can reach ``expiry_for`` before cycle 1.
 
         Same reason the venetian drift-reset mirrors are seeded in ``__init__``
-        from ``_rc_attach``: an unseeded attribute is an ``AttributeError``, not
-        a stale value.
+        from the ``rc`` RuntimeConfig snapshot: an unseeded attribute is an
+        ``AttributeError``, not a stale value.
         """
         from custom_components.adaptive_cover_pro.coordinator import (
             AdaptiveDataUpdateCoordinator,
@@ -1007,7 +1017,7 @@ class TestSliceIsTheSingleModeSource:
 
         source = inspect.getsource(AdaptiveDataUpdateCoordinator.__init__)
         assert "self.manual_override_duration_mode" in source
-        assert "_rc_attach.manual_override.duration_mode" in source
+        assert "rc.manual_override.duration_mode" in source
 
     def test_resolver_reads_the_mirror_not_the_options_dict(self):
         """``_resolve_override_deadline`` resolves off the slice mirror."""
@@ -1049,7 +1059,6 @@ class TestSliceIsTheSingleModeSource:
         mgr.set_last_updated(
             "cover.a", _state(dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.a")
 
         coord = MagicMock()
         coord.manager = mgr
@@ -1062,6 +1071,189 @@ class TestSliceIsTheSingleModeSource:
             state = AdaptiveDataUpdateCoordinator._manual_override_diagnostics(coord)
 
         assert state["duration_mode"] == MANUAL_OVERRIDE_DURATION_MODE_UNTIL_SUNRISE
+
+
+# ---------------------------------------------------------------------------
+# The window end: ONE source for the predicate AND the value
+# ---------------------------------------------------------------------------
+
+
+def _real_manager_coordinator(options: dict, **configured):
+    """Coordinator stub whose ``_time_mgr`` is a **real** ``TimeWindowManager``.
+
+    Every other resolver test sets ``coord._time_mgr.end_time`` as a bare
+    ``MagicMock`` attribute, so nothing has ever exercised the actual path from
+    ``_update_options`` → ``update_config`` → ``end_time``. That is precisely
+    the hole that let the window-end predicate and the window-end value answer
+    about different configurations for two releases (issue #1061): with a mock
+    in between, "the options say an end exists" and "the manager resolves that
+    end" can never be caught disagreeing.
+
+    Pass ``**configured`` to drive ``update_config`` — omit it entirely to model
+    a manager that has not seen a cycle yet.
+    """
+    from custom_components.adaptive_cover_pro.managers.time_window import (
+        TimeWindowManager,
+    )
+
+    coord = _coordinator(options, sun_data=_astral_sun_data())
+    mgr = TimeWindowManager(hass=MagicMock(), logger=MagicMock())
+    if configured:
+        mgr.update_config(
+            **{
+                "start_time": None,
+                "start_time_entity": None,
+                "end_time": None,
+                "end_time_entity": None,
+                **configured,
+            }
+        )
+    coord._time_mgr = mgr
+    return coord
+
+
+class TestManagerIsTheSingleWindowEndSource:
+    """``TimeWindowManager`` answers BOTH halves of the window-end question.
+
+    Issue #1061. ``_resolve_override_deadline`` used to read
+    ``has_configured_window_end(self.config_entry.options)`` — raw, live — and
+    then take the instant from ``self._time_mgr.end_time``, which is fed from
+    the ``TimeWindowSlice`` mirror. Two sources for the same two option keys
+    (``CONF_END_TIME`` / ``CONF_END_ENTITY``), inside one expression, on one
+    line.
+
+    These follow the #1051 pattern: each deliberately makes the options dict
+    and the manager *contradict* each other, so a resolver that still consulted
+    options would return the options answer and fail.
+    """
+
+    def test_resolver_reads_the_predicate_from_the_manager_not_the_options_dict(self):
+        """Options carry no end key at all; the manager alone says there is one."""
+        coord = _real_manager_coordinator(
+            {
+                CONF_MANUAL_OVERRIDE_DURATION_MODE: (
+                    MANUAL_OVERRIDE_DURATION_MODE_UNTIL_WINDOW_END
+                )
+            },
+            end_time="17:00:00",
+        )
+
+        with (
+            patch("homeassistant.util.dt.DEFAULT_TIME_ZONE", dt.UTC),
+            freeze_time("2026-07-02 12:00:00"),
+        ):
+            deadline = coord._resolve_override_deadline(
+                dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
+            )
+
+        assert deadline == dt.datetime(2026, 7, 2, 17, 0, tzinfo=dt.UTC)
+
+    def test_resolver_ignores_an_options_end_the_manager_never_received(self):
+        """Pre-cycle-1 lock: an end the manager was never given is not an anchor.
+
+        Moving the predicate onto the manager has exactly one ordering risk —
+        a consumer reaching the resolver before ``_update_options`` has run
+        (the end-time sensor and the reboot-restore path both can). The
+        manager's fields are ``None`` until then, so the honest answer is "no
+        end bound" and the hold falls back to the numeric duration. Options
+        say otherwise here, on purpose.
+        """
+        from custom_components.adaptive_cover_pro.const import CONF_END_TIME
+
+        coord = _real_manager_coordinator(
+            {
+                CONF_MANUAL_OVERRIDE_DURATION_MODE: (
+                    MANUAL_OVERRIDE_DURATION_MODE_UNTIL_WINDOW_END
+                ),
+                CONF_END_TIME: "17:00:00",
+            }
+        )
+
+        with (
+            patch("homeassistant.util.dt.DEFAULT_TIME_ZONE", dt.UTC),
+            freeze_time("2026-07-02 12:00:00"),
+        ):
+            deadline = coord._resolve_override_deadline(
+                dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
+            )
+
+        assert deadline is None
+
+    def test_blank_time_end_resolves_to_no_deadline_through_a_real_manager(self):
+        """#1044's sentinel guard, proven through the real object.
+
+        ``TimeWindowManager.end_time`` maps a static midnight onto *tomorrow's*
+        midnight — a deadline that recedes a day at every local midnight and
+        never expires. With the predicate and the value on the same object,
+        the screen and the thing it screens can no longer drift apart.
+        """
+        from custom_components.adaptive_cover_pro.const import BLANK_TIME, CONF_END_TIME
+
+        coord = _real_manager_coordinator(
+            {
+                CONF_MANUAL_OVERRIDE_DURATION_MODE: (
+                    MANUAL_OVERRIDE_DURATION_MODE_UNTIL_WINDOW_END
+                ),
+                CONF_END_TIME: BLANK_TIME,
+            },
+            end_time=BLANK_TIME,
+        )
+
+        with (
+            patch("homeassistant.util.dt.DEFAULT_TIME_ZONE", dt.UTC),
+            freeze_time("2026-07-02 12:00:00"),
+        ):
+            deadline = coord._resolve_override_deadline(
+                dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)
+            )
+
+        assert deadline is None
+
+
+# ---------------------------------------------------------------------------
+# The premise every mirrored read in the resolver rests on
+# ---------------------------------------------------------------------------
+
+
+class TestDeadlineOptionsForceAReload:
+    """Every option ``_resolve_override_deadline`` reads must reload the entry.
+
+    Issue #1061. The resolver mixes source shapes on purpose: the duration mode
+    and the window end come from per-cycle ``RuntimeConfig`` mirrors, the four
+    sun-boundary keys are read live. That mix is only safe because **none** of
+    these keys can change under a live coordinator — ``options_write_reloads``
+    (``__init__.py``) skips the reload only when *every* changed key is in
+    ``_RUNTIME_APPLICABLE_OPTIONS``, so a write to any of these six tears the
+    coordinator down and rebuilds every mirror from the new options.
+
+    Nothing asserted that premise, which is what made #1061 arguable in the
+    first place. Adding one of these six to the runtime-applicable map would
+    silently give the resolver a stale mirror paired with fresh live reads;
+    this fires instead. Same pattern as the ``CONF_INTERP`` guard in
+    ``tests/test_pipeline/test_snapshot_builder.py``.
+    """
+
+    def test_deadline_option_keys_are_absent_from_runtime_applicable_options(self):
+        """All six keys the deadline resolver reads force a full reload."""
+        from custom_components.adaptive_cover_pro import _RUNTIME_APPLICABLE_OPTIONS
+        from custom_components.adaptive_cover_pro.const import (
+            CONF_END_ENTITY,
+            CONF_END_TIME,
+            CONF_SUNRISE_OFFSET,
+            CONF_SUNRISE_TIME_ENTITY,
+            CONF_SUNSET_OFFSET,
+            CONF_SUNSET_TIME_ENTITY,
+        )
+
+        for key in (
+            CONF_END_TIME,
+            CONF_END_ENTITY,
+            CONF_SUNSET_TIME_ENTITY,
+            CONF_SUNRISE_TIME_ENTITY,
+            CONF_SUNSET_OFFSET,
+            CONF_SUNRISE_OFFSET,
+        ):
+            assert key not in _RUNTIME_APPLICABLE_OPTIONS
 
 
 # ---------------------------------------------------------------------------
@@ -1127,7 +1319,7 @@ class TestSurfaces:
         assert mgr.is_cover_manual("cover.a") is True
         assert mgr.expiry_for("cover.a") == expiry
         # The derived start is still written for the diagnostics display.
-        assert mgr.manual_control_time["cover.a"] == expiry - mgr.reset_duration
+        assert mgr.override_for("cover.a").started_at == expiry - mgr.reset_duration
 
     def test_diagnostics_remaining_seconds_uses_resolved_deadline(self):
         mgr = _manager(["cover.a"], reset_duration={"hours": 2})
@@ -1136,7 +1328,6 @@ class TestSurfaces:
         mgr.set_last_updated(
             "cover.a", _state(dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.a")
 
         with freeze_time("2026-07-02 20:00:00"):
             state = _build_manual_override_diagnostics(mgr, {})
@@ -1151,7 +1342,6 @@ class TestSurfaces:
         mgr.set_last_updated(
             "cover.a", _state(dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.a")
 
         with freeze_time("2026-07-02 20:00:00"):
             state = _build_manual_override_diagnostics(
@@ -1224,7 +1414,6 @@ class TestStartedAtProvenance:
         mgr.set_last_updated(
             "cover.a", _state(dt.datetime(2026, 7, 2, 12, 0, tzinfo=dt.UTC)), True
         )
-        mgr.mark_manual_control("cover.a")
 
         with freeze_time("2026-07-02 12:30:00"):
             state = _build_manual_override_diagnostics(mgr, {})
@@ -1256,7 +1445,7 @@ class TestStartedAtProvenance:
 
         mgr.reset("cover.a")
 
-        assert mgr.manual_control_start_source == {}
+        assert mgr.active_entities() == []
 
 
 def _build_manual_override_diagnostics(manager, options: dict) -> dict:

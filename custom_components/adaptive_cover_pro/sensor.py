@@ -18,9 +18,11 @@ from homeassistant.const import (
     ATTR_FRIENDLY_NAME,
     MATCH_ALL,
     PERCENTAGE,
+    STATE_UNAVAILABLE,
+    STATE_UNKNOWN,
     UnitOfPower,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import dt as dt_util
@@ -68,7 +70,7 @@ from .helpers import (
     custom_position_slot_sensors,
     motion_entities,
 )
-from .reason_i18n import Reason, render, reason_to_dict
+from .reason_i18n import Reason, reason_attrs, render
 from .templates import is_template_string
 from .unit_system import length_display_unit, to_display_length
 
@@ -95,15 +97,11 @@ def _localized_reason(
 def _reason_to_dict_attrs(payload: Reason) -> dict[str, Any]:
     """Map a reason payload to the additive ``reason_code`` + ``reason_params`` attrs.
 
-    ``reason_to_dict`` yields a JSON-safe ``{"code", "params"}`` payload (nested
-    fragments preserved); this flattens it into the two attribute names the
-    companion card reads to localize with its own templates (issue #882).
+    Thin alias over :func:`..reason_i18n.reason_attrs`, which owns the flattening
+    so the diagnostics export produces byte-identical keys (issue #1359). Kept as
+    a module-local name because every call site in this file reads it.
     """
-    payload_dict = reason_to_dict(payload)
-    return {
-        "reason_code": payload_dict["code"],
-        "reason_params": payload_dict["params"],
-    }
+    return reason_attrs(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +122,6 @@ class _SensorSpec:
     """
 
     suffix: str  # → unique_id; LOCKED
-    display_name: str
     icon: str | None
     value_fn: Callable[[Any], Any]
     attrs_fn: Callable[[Any], Mapping[str, Any] | None] | None = None
@@ -201,13 +198,7 @@ class _ACPSensor(AdaptiveCoverSensorBase, SensorEntity):
             entry_id, hass, config_entry, coordinator, spec.suffix, spec.icon
         )
         self._spec = spec
-        self._sensor_name = spec.display_name
         _apply_spec_attrs(self, spec)
-
-    @property
-    def name(self) -> str:
-        """Display name (combined with device name when has_entity_name=True)."""
-        return self._sensor_name
 
     @property
     def native_value(self) -> Any:
@@ -238,13 +229,7 @@ class _ACPDiagnosticSensor(AdaptiveCoverDiagnosticSensorBase, SensorEntity):
             entry_id, hass, config_entry, coordinator, spec.suffix, spec.icon
         )
         self._spec = spec
-        self._sensor_name = spec.display_name
         _apply_spec_attrs(self, spec)
-
-    @property
-    def name(self) -> str:
-        """Display name."""
-        return self._sensor_name
 
     @property
     def native_value(self) -> Any:
@@ -282,27 +267,49 @@ class _ACPRestorableDiagnosticSensor(_ACPDiagnosticSensor, RestoreEntity):
         per_entity = (last.attributes or {}).get("per_entity")
         if not isinstance(per_entity, Mapping):
             per_entity = {}
-        if self._restore_from_attributes(per_entity):
+        # ``last`` rides along beside the dict (issue #175). The
+        # cloud-escalation deadline is a single per-entry instant, so it
+        # persists as the sensor's own STATE rather than as a per-cover
+        # mapping — and a subclass cannot reach it from ``per_entity`` alone.
+        # One hook with an extra argument rather than a second restore seam:
+        # the "read the prior state, rehydrate a manager, write HA state once
+        # if anything came back" shape is identical for all three subclasses,
+        # and only what they read out of it differs.
+        if self._restore_from_attributes(per_entity, last):
             self.async_write_ha_state()
 
-    def _restore_from_attributes(self, per_entity: Mapping[str, Any]) -> bool:
-        """Consume the restored per_entity dict; return True if anything restored."""
+    def _restore_from_attributes(
+        self, per_entity: Mapping[str, Any], state: State | None = None
+    ) -> bool:
+        """Consume the restored state; return True if anything was restored.
+
+        ``state`` defaults to ``None`` so the two pre-#175 subclasses — and
+        every test that calls their hook directly — are unchanged.
+        """
         return False
 
 
-def _parse_restored_expiry(entity_id: str, raw: Any) -> dt.datetime | None:
+def _parse_restored_expiry(
+    subject: str, raw: Any, *, label: str = "manual-override"
+) -> dt.datetime | None:
     """Parse one restored expiry value, or return None if it is unusable (#1273).
 
     Rejects anything ``fromisoformat`` cannot take, and anything it CAN take but
     that comes back naive — a naive value compares fine here and then raises
     ``TypeError`` against the tz-aware ``now`` at the call site, so it has to be
     caught at the parse rather than trusted through.
+
+    ``label`` names the deadline in the warnings, so the cloud-escalation
+    restore (issue #175) reuses this parser instead of growing a second one
+    with the same three traps to fall into. It defaults to ``manual-override``,
+    which renders every message byte-for-byte as it read before.
     """
     if not isinstance(raw, str):
         _LOGGER.warning(
-            "Discarding restored manual-override expiry for %s: expected an "
+            "Discarding restored %s expiry for %s: expected an "
             "ISO-8601 string, got %s",
-            entity_id,
+            label,
+            subject,
             type(raw).__name__,
         )
         return None
@@ -310,16 +317,18 @@ def _parse_restored_expiry(entity_id: str, raw: Any) -> dt.datetime | None:
         parsed = dt.datetime.fromisoformat(raw)
     except ValueError:
         _LOGGER.warning(
-            "Discarding unparseable restored manual-override expiry for %s: %r",
-            entity_id,
+            "Discarding unparseable restored %s expiry for %s: %r",
+            label,
+            subject,
             raw,
         )
         return None
     if parsed.tzinfo is None:
         _LOGGER.warning(
-            "Discarding restored manual-override expiry for %s: %r carries no "
+            "Discarding restored %s expiry for %s: %r carries no "
             "timezone, so its true instant is unknown",
-            entity_id,
+            label,
+            subject,
             raw,
         )
         return None
@@ -329,8 +338,14 @@ def _parse_restored_expiry(entity_id: str, raw: Any) -> dt.datetime | None:
 class _ManualOverrideEndSensor(_ACPRestorableDiagnosticSensor):
     """Concrete: rehydrate manual-override manager from per_entity expiry dict."""
 
-    def _restore_from_attributes(self, per_entity: Mapping[str, Any]) -> bool:
+    def _restore_from_attributes(
+        self, per_entity: Mapping[str, Any], _state: State | None = None
+    ) -> bool:
         """Push prior per-entity expiry timestamps back into the manager.
+
+        The restored ``State`` is ignored here: every expiry this sensor owns
+        is per cover and already in ``per_entity``, while its own state is only
+        the max of them.
 
         per_entity maps cover entity_id → ISO-8601 UTC expiry string.
         Entries that are expired or not in the current cover set are dropped.
@@ -369,8 +384,14 @@ class _PositionVerificationSensor(_ACPRestorableDiagnosticSensor):
     detected through the fully-guarded normal path.
     """
 
-    def _restore_from_attributes(self, per_entity: Mapping[str, Any]) -> bool:
+    def _restore_from_attributes(
+        self, per_entity: Mapping[str, Any], _state: State | None = None
+    ) -> bool:
         """Seed each cover's last commanded target back into CoverCommandService.
+
+        The restored ``State`` is ignored here: this sensor's own state is a
+        retry count, and every target it restores is per cover in
+        ``per_entity``.
 
         per_entity maps cover entity_id → its diagnostics dict. Entries not in
         the current cover set, or whose ``target`` is None, are skipped. Each
@@ -393,6 +414,56 @@ class _PositionVerificationSensor(_ACPRestorableDiagnosticSensor):
                 restored_any = True
 
         return restored_any
+
+
+# State strings a TIMESTAMP sensor legitimately persists when it has no value.
+# Dropped SILENTLY rather than warned about (issue #175): "nothing was holding
+# when HA went down" is the normal restart, so warning on it would put a scary
+# line in the log of most installs most of the time.
+_NO_RESTORED_VALUE: frozenset[str] = frozenset({STATE_UNKNOWN, STATE_UNAVAILABLE, ""})
+
+
+class _CloudEscalationEndSensor(_ACPRestorableDiagnosticSensor):
+    """Concrete: rehydrate the cloud-escalation deadline after a restart (#175).
+
+    The one part of the escalation a user cannot debug from the outside — and
+    the one piece of its state that must not be volatile. Cloud suppression
+    deliberately re-engages instantly on reload (#1238's ``seeded=False``), so
+    a clock that restarted with HA would hand an install that reboots daily a
+    fresh full hold every day and the escalation would never fire.
+
+    ``RestoreEntity`` through a diagnostic sensor is the whole persistence
+    story in this integration — there is no ``homeassistant.helpers.storage``
+    ``Store`` anywhere in the component — so this follows
+    ``manual_override_end_time``, the only other restored deadline.
+    """
+
+    def _restore_from_attributes(
+        self, per_entity: Mapping[str, Any], state: State | None = None
+    ) -> bool:
+        """Push the prior escalation deadline back into the manager.
+
+        Reads the sensor's own STATE, not ``per_entity``: the deadline is one
+        instant per config entry, matching ``CloudSuppressionManager`` being
+        coordinator-scoped, so there is nothing to key a mapping on.
+
+        A deadline already in the past is dropped, following the
+        manual-override precedent. It says the escalation had already fired
+        before the restart, and adopting one that could be weeks old would
+        fling the cover open the instant any cloud appeared after a long
+        shutdown. Every other unusable shape is dropped with a warning by the
+        shared parser (#1273) — one bad payload must not break sensor setup.
+        """
+        if state is None or state.state in _NO_RESTORED_VALUE:
+            return False
+        deadline = _parse_restored_expiry(
+            self.entity_id, state.state, label="cloud-escalation"
+        )
+        if deadline is None or deadline <= dt.datetime.now(dt.UTC):
+            return False
+        mgr = self.coordinator._cloud_mgr  # noqa: SLF001
+        mgr.restore_escalation_deadline(deadline)
+        return True
 
 
 # ---------------------------------------------------------------------------
@@ -797,16 +868,18 @@ def _last_action_value(s: _ACPDiagnosticSensor) -> str | None:
     service = action.get("service", "unknown")
     entity = action.get("entity_id", "unknown")
     timestamp_str = action.get("timestamp", "")
+    position = action.get("position")
+    position_str = f"{position}%" if position is not None else "unknown"
 
     if timestamp_str:
         try:
             ts = dt_util.parse_datetime(timestamp_str)
             if ts:
                 time_str = dt_util.as_local(ts).strftime("%H:%M:%S")
-                return f"{service} → {entity.split('.')[-1]} at {time_str}"
+                return f"{service} → {entity.split('.')[-1]} → {position_str} at {time_str}"
         except (ValueError, AttributeError):
             pass
-    return f"{service} → {entity.split('.')[-1]}"
+    return f"{service} → {entity.split('.')[-1]} → {position_str}"
 
 
 def _last_action_attrs(s: _ACPDiagnosticSensor) -> Mapping[str, Any] | None:
@@ -863,6 +936,26 @@ def _manual_override_end_attrs(
         "per_entity": {
             entity_id: expiry.isoformat() for entity_id, expiry in expiries.items()
         }
+    }
+
+
+def _cloud_escalation_end_value(
+    s: _CloudEscalationEndSensor,
+) -> dt.datetime | None:
+    """Return the derived deadline, or None with nothing holding / no delay set."""
+    return s.coordinator._cloud_mgr.escalation_deadline  # noqa: SLF001
+
+
+def _cloud_escalation_end_attrs(
+    s: _CloudEscalationEndSensor,
+) -> Mapping[str, Any] | None:
+    """Publish the phase and the two inputs the deadline is derived from."""
+    mgr = s.coordinator._cloud_mgr  # noqa: SLF001
+    started_at = mgr.suppression_started_at
+    return {
+        "phase": mgr.phase,
+        "delay_seconds": mgr.escalation_delay_seconds,
+        "started_at": None if started_at is None else started_at.isoformat(),
     }
 
 
@@ -1369,7 +1462,7 @@ def _last_skipped_value(s: _ACPDiagnosticSensor) -> str | None:
         return None
     action = s.data.diagnostics.get("last_skipped_action")
     if not action or not action.get("entity_id"):
-        return "No action skipped"
+        return "no_action_skipped"
     return action.get("reason")
 
 
@@ -1410,8 +1503,8 @@ def _last_skipped_attrs(s: _ACPDiagnosticSensor) -> Mapping[str, Any] | None:
 _STANDARD_SPECS: tuple[_SensorSpec, ...] = (
     _SensorSpec(
         suffix="Cover_Position",
-        display_name="Target Position",
         icon="mdi:sun-compass",
+        translation_key="target_position",
         state_class=SensorStateClass.MEASUREMENT,
         unit=PERCENTAGE,
         suggested_display_precision=0,
@@ -1435,8 +1528,8 @@ _STANDARD_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="Cover_Tilt",
-        display_name="Target Tilt",
         icon="mdi:angle-acute",
+        translation_key="target_tilt",
         state_class=SensorStateClass.MEASUREMENT,
         unit=PERCENTAGE,
         suggested_display_precision=0,
@@ -1446,8 +1539,8 @@ _STANDARD_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="Start Sun",
-        display_name="Start Sun",
         icon="mdi:sun-clock-outline",
+        translation_key="start_sun",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_time_value("start"),
         attrs_fn=_time_attrs("start"),
@@ -1455,8 +1548,8 @@ _STANDARD_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="End Sun",
-        display_name="End Sun",
         icon="mdi:sun-clock",
+        translation_key="end_sun",
         device_class=SensorDeviceClass.TIMESTAMP,
         value_fn=_time_value("end"),
         attrs_fn=_time_attrs("end"),
@@ -1468,8 +1561,8 @@ _STANDARD_SPECS: tuple[_SensorSpec, ...] = (
 _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     _SensorSpec(
         suffix="sun_position",
-        display_name="Sun Position",
         icon="mdi:compass-outline",
+        translation_key="sun_position",
         state_class=SensorStateClass.MEASUREMENT,
         unit="°",
         suggested_display_precision=1,
@@ -1478,7 +1571,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="solar_calculation",
-        display_name="Solar Calculation",
         icon="mdi:sun-angle-outline",
         translation_key="solar_calculation",
         state_class=SensorStateClass.MEASUREMENT,
@@ -1492,7 +1584,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="control_status",
-        display_name="Control Status",
         icon="mdi:information-outline",
         translation_key="control_status",
         value_fn=_control_status_value,
@@ -1501,7 +1592,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="decision_trace",
-        display_name="Decision Trace",
         icon="mdi:list-status",
         translation_key="decision_trace",
         device_class=SensorDeviceClass.ENUM,
@@ -1514,7 +1604,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="position_forecast",
-        display_name="Position Forecast",
         icon="mdi:chart-line",
         translation_key="position_forecast",
         device_class=SensorDeviceClass.TIMESTAMP,
@@ -1524,31 +1613,40 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="last_skipped_action",
-        display_name="Last Skipped Action",
         icon="mdi:debug-step-over",
+        translation_key="last_skipped_action",
         value_fn=_last_skipped_value,
         attrs_fn=_last_skipped_attrs,
     ),
     _SensorSpec(
         suffix="last_cover_action",
-        display_name="Last Cover Action",
         icon="mdi:history",
+        translation_key="last_cover_action",
         value_fn=_last_action_value,
         attrs_fn=_last_action_attrs,
     ),
     _SensorSpec(
         suffix="manual_override_end_time",
-        display_name="Manual Override End Time",
         icon="mdi:timer-outline",
+        translation_key="manual_override_end_time",
         device_class=SensorDeviceClass.TIMESTAMP,
         should_poll=False,
         value_fn=_manual_override_end_value,
         attrs_fn=_manual_override_end_attrs,
     ),
     _SensorSpec(
+        suffix="cloud_escalation_end_time",
+        icon="mdi:timer-sand",
+        translation_key="cloud_escalation_end_time",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        should_poll=False,
+        value_fn=_cloud_escalation_end_value,
+        attrs_fn=_cloud_escalation_end_attrs,
+    ),
+    _SensorSpec(
         suffix="position_verification",
-        display_name="Position Verification",
         icon="mdi:refresh",
+        translation_key="position_verification",
         state_class=SensorStateClass.MEASUREMENT,
         unit="retries",
         should_poll=False,
@@ -1558,7 +1656,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="motion_status",
-        display_name="Occupancy Status",
         icon="mdi:motion-sensor",
         translation_key="motion_status",
         device_class=SensorDeviceClass.ENUM,
@@ -1576,7 +1673,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="travel_calibration",
-        display_name="Travel Time Calibration",
         icon="mdi:timer-cog-outline",
         translation_key="travel_calibration",
         device_class=SensorDeviceClass.ENUM,
@@ -1595,7 +1691,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="solar_gain",
-        display_name="Estimated Solar Gain",
         icon="mdi:solar-power-variant",
         translation_key="solar_gain",
         device_class=SensorDeviceClass.POWER,
@@ -1616,7 +1711,6 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
     ),
     _SensorSpec(
         suffix="climate_status",
-        display_name="Climate Status",
         icon="mdi:weather-partly-cloudy",
         translation_key="climate_status",
         device_class=SensorDeviceClass.ENUM,
@@ -1631,6 +1725,7 @@ _DIAGNOSTIC_SPECS: tuple[_SensorSpec, ...] = (
 # Specs that need a non-default class (RestoreEntity hooks etc.).
 _SPEC_OVERRIDES: dict[str, type[_ACPDiagnosticSensor]] = {
     "manual_override_end_time": _ManualOverrideEndSensor,
+    "cloud_escalation_end_time": _CloudEscalationEndSensor,
     "position_verification": _PositionVerificationSensor,
 }
 

@@ -14,6 +14,7 @@ from .const import (
     DEFAULT_MOTION_TEMPLATE_MODE,
     DEFAULT_SOLAR_COVER_SHADE,
     DEFAULT_SOLAR_COVER_SIDE,
+    DEFAULT_SNAP_CLOSED_THRESHOLD,
     DEFAULT_SOLAR_G_GLAZING,
     DEFAULT_SUNRISE_GATES_START,
     DEFAULT_TEMPLATE_COMBINE_MODE,
@@ -636,6 +637,14 @@ class TiltConfig:
     # the slat on a travel limit and there is no closure left to scale — see
     # ``engine/covers/tilt.py``.
     safety_margin: float = 0.0
+    # Minimum elevation (degrees, profile plane) the beam reflected off the
+    # slats' upper face may leave at (issue #1282). ``0.0`` (the default,
+    # mirroring const.DEFAULT_TILT_MIN_REFLECTED_ELEVATION) is the DISABLED
+    # sentinel — the solved slat angle is then returned untouched, byte-for-byte.
+    # A positive value caps the angle at ``90 + (beta - N)/2``, which only ever
+    # CLOSES the slat, so the direct-sun cut-off stays an invariant. See
+    # ``engine/covers/tilt.constrain_reflected_beam``.
+    min_reflected_elevation: float = 0.0
     # Output transform for the sun-tracking tilt demand (issue #957). "clamp"
     # (default) flat-caps at the [min_tilt, max_tilt] band edges — today's exact
     # behaviour; "proportional" linearly remaps the full 0–100% demand into the
@@ -771,6 +780,12 @@ class CloudSuppressionSlice:
 
     enabled: bool
     hold_time_seconds: int
+    # How long a hold may run before the handler gives up on the cloudy
+    # position and opens the cover fully (issue #175). Seconds, or None for "as
+    # long as the cloud lasts" — the pre-#175 behaviour and what an absent or
+    # all-zero duration normalises to. NOT the hold-time above: that one gates
+    # how fast suppression engages.
+    escalation_delay_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -800,6 +815,11 @@ class TrackingSlice:
     # Opt-in sun-tracking movement minimization (quantize to N coverage levels).
     minimize_movements: bool = False
     max_coverage_steps: int = 1
+    # Opt-in sun-tracking declutter snap (issue #1379): collapse a small
+    # non-zero position-axis demand to the closed endpoint instead of leaving a
+    # barely-open sliver. Inert while off; see ``PipelineSnapshot.snap_closed_below``.
+    snap_closed_below: bool = False
+    snap_closed_threshold: int = DEFAULT_SNAP_CLOSED_THRESHOLD
     # When True, the reconciliation pass resends until the cover reaches target.
     # When False (default), command once and let a settle past tolerance become
     # a manual override (issue #591).
@@ -870,10 +890,13 @@ class RuntimeConfig:
         here, not redeclared, so a single source of truth governs both this
         loader and any other consumer.
         """
+        from .helpers import duration_seconds_or_none
+
         from .const import (
             CONF_AZIMUTH,
             CONF_CLIMATE_MODE,
             CONF_CLIMATE_TEMP_HOLD_TIME,
+            CONF_CLOUD_ESCALATION_DELAY,
             CONF_CLOUD_SUPPRESSION,
             CONF_CLOUD_SUPPRESSION_HOLD_TIME,
             CONF_COMMAND_QUEUE,
@@ -910,6 +933,8 @@ class RuntimeConfig:
             CONF_OPEN_CLOSE_THRESHOLD,
             CONF_OUTSIDE_TEMP_SOURCE,
             CONF_POSITION_TOLERANCE,
+            CONF_SNAP_CLOSED_BELOW,
+            CONF_SNAP_CLOSED_THRESHOLD,
             CONF_START_ENTITY,
             CONF_START_TIME,
             CONF_SUNRISE_GATES_START,
@@ -946,10 +971,12 @@ class RuntimeConfig:
             DEFAULT_ENABLE_POSITION_MATCHING,
             DEFAULT_ENDPOINT_USE_OPEN_CLOSE,
             DEFAULT_ENFORCE_DELTA_AT_ENDPOINTS,
+            DEFAULT_MANUAL_OVERRIDE_DURATION,
             DEFAULT_MAX_COVERAGE_STEPS,
             DEFAULT_MINIMIZE_MOVEMENTS,
             DEFAULT_MOTION_TIMEOUT,
             DEFAULT_OUTSIDE_TEMP_SOURCE,
+            DEFAULT_SNAP_CLOSED_BELOW,
             DEFAULT_SUNRISE_GATES_START,
             DEFAULT_VENETIAN_BACKROTATE_PUBLISH_LAG_SECONDS,
             DEFAULT_VENETIAN_MODE,
@@ -994,6 +1021,14 @@ class RuntimeConfig:
                 max_coverage_steps=int(
                     options.get(CONF_MAX_COVERAGE_STEPS, DEFAULT_MAX_COVERAGE_STEPS)
                 ),
+                snap_closed_below=bool(
+                    options.get(CONF_SNAP_CLOSED_BELOW, DEFAULT_SNAP_CLOSED_BELOW)
+                ),
+                snap_closed_threshold=int(
+                    options.get(
+                        CONF_SNAP_CLOSED_THRESHOLD, DEFAULT_SNAP_CLOSED_THRESHOLD
+                    )
+                ),
                 enable_position_matching=options.get(
                     CONF_ENABLE_POSITION_MATCHING, DEFAULT_ENABLE_POSITION_MATCHING
                 ),
@@ -1009,7 +1044,15 @@ class RuntimeConfig:
             ),
             manual_override=ManualOverrideSlice(
                 reset=options.get(CONF_MANUAL_OVERRIDE_RESET, False),
-                duration=options.get(CONF_MANUAL_OVERRIDE_DURATION) or {"hours": 2},
+                # Copied, not aliased: the constant is a mutable dict and this
+                # value reaches ``coordinator.manual_duration`` and
+                # ``DetectorConfig.duration``, so handing out the module-level
+                # object would let one entry's in-place edit retune every other
+                # entry's override window (issue #1274).
+                duration=(
+                    options.get(CONF_MANUAL_OVERRIDE_DURATION)
+                    or dict(DEFAULT_MANUAL_OVERRIDE_DURATION)
+                ),
                 ignore_external=options.get(CONF_MANUAL_IGNORE_EXTERNAL, False),
                 input_entities=options.get(CONF_MANUAL_OVERRIDE_INPUT_ENTITIES, []),
                 input_template=options.get(CONF_MANUAL_OVERRIDE_INPUT_TEMPLATE),
@@ -1131,6 +1174,9 @@ class RuntimeConfig:
                         CONF_CLOUD_SUPPRESSION_HOLD_TIME,
                         DEFAULT_CLOUD_SUPPRESSION_HOLD_TIME,
                     )
+                ),
+                escalation_delay_seconds=duration_seconds_or_none(
+                    options.get(CONF_CLOUD_ESCALATION_DELAY)
                 ),
             ),
             climate_smoothing=ClimateSmoothingSlice(

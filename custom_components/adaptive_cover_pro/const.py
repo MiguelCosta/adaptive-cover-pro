@@ -545,6 +545,20 @@ DEFAULT_VENETIAN_TILT_SAFETY_MARGIN = DEFAULT_TILT_SAFETY_MARGIN
 MIN_VENETIAN_TILT_SAFETY_MARGIN = MIN_TILT_SAFETY_MARGIN
 MAX_VENETIAN_TILT_SAFETY_MARGIN = MAX_TILT_SAFETY_MARGIN
 
+# Minimum elevation (degrees, profile plane) the beam reflected off the slats'
+# upper face may leave at (issue #1282). Above beta = arctan(slat_distance /
+# depth) the daylight-optimal cut-off pose tilts the outer slat edge UP, turning
+# the slats into a mirror aimed into the room — at the reporting WAREMA geometry
+# the reflection leaves at -0.32°, i.e. horizontally across the room at slat
+# height. Raising the floor turns the slats back toward (and past) horizontal
+# until the reflection clears it; it never opens them past the direct-sun
+# cut-off, because the blocking condition is a band rather than a half-line.
+# 0 = DISABLED (the same "absent and 0 are the same state" sentinel
+# CONF_TILT_HORIZONTAL_PERCENT uses, which is what lets this ship with no
+# migration block and makes a BOX selector safe).
+CONF_TILT_MIN_REFLECTED_ELEVATION = "tilt_min_reflected_elevation"
+DEFAULT_TILT_MIN_REFLECTED_ELEVATION = 0  # degrees — 0 = no reflection floor
+
 # Proportional tilt output transform (issue #957). Chooses how the sun-tracking
 # tilt demand is fitted into the ``[min_tilt, max_tilt]`` band. ``clamp``
 # (default, back-compat) flat-caps the value at the band edges — today's exact
@@ -647,6 +661,16 @@ CONF_MINIMIZE_MOVEMENTS = "minimize_movements"  # opt-in toggle
 CONF_MAX_COVERAGE_STEPS = "max_coverage_steps"  # discrete coverage levels, 1-10
 DEFAULT_MINIMIZE_MOVEMENTS = False
 DEFAULT_MAX_COVERAGE_STEPS = 1
+# Opt-in "declutter" snap (issue #1379): collapse a small non-zero sun-tracking
+# demand to the axis's fully-closed endpoint instead of leaving a barely-open
+# sliver (e.g. 2-3 %) that reads as "not fully closed". Inert while off;
+# scoped to the position axis / sun-tracking outputs only, via the single
+# ``solar_position_from_geometry`` seam — see ``PositionConverter.
+# snap_closed_below_threshold``.
+CONF_SNAP_CLOSED_BELOW = "snap_closed_below"  # opt-in toggle
+CONF_SNAP_CLOSED_THRESHOLD = "snap_closed_threshold"  # percent, 1-50
+DEFAULT_SNAP_CLOSED_BELOW = False
+DEFAULT_SNAP_CLOSED_THRESHOLD = 10
 # True if blind passes some light even when closed (used by glare/climate).
 CONF_TRANSPARENT_BLIND = "transparent_blind"
 
@@ -998,6 +1022,46 @@ ISSUE_COVER_TILT_UNSUPPORTED = (
 # middle rail: unset (or naming a cover outside the instance's list) leaves the
 # shade silently behaving like a plain vertical blind.
 ISSUE_DAY_NIGHT_MIDDLE_RAIL_UNSET = "day_night_middle_rail_unset"
+# The one *fixable* Repair this integration raises (issue #1369): a device this
+# config entry owns that is neither our service device nor holding any of our
+# entities — the leftover of the duplicate HA 2026.8+ minted before the
+# via_device rework. Namespaced per entry AND per device
+# (`{id}_{entry_id}_{device_id}`) because one instance can have more than one.
+ISSUE_DUPLICATE_DEVICE = "duplicate_device"
+# Keys of that Repair's stored payload. Written in state/device_link when the
+# issue is raised and read back in repairs.py when the user confirms the fix —
+# two files, so the spelling lives here rather than in either of them.
+ISSUE_DATA_ENTRY_ID = "entry_id"
+ISSUE_DATA_DEVICE_ID = "device_id"
+
+
+def duplicate_device_issue_id(entry_id: str, device_id: str = "") -> str:
+    """Return the duplicate-device Repair id for *device_id* under *entry_id*.
+
+    Single source of truth for the ``{id}_{entry_id}_{device_id}`` shape (issue
+    #1369), which is raised in ``state/device_link``, swept there, and matched
+    by tests in two more files. With no ``device_id`` it returns the per-entry
+    prefix every such id starts with — exactly what the sweep in
+    ``clear_duplicate_device_issues`` matches on, so the prefix and the ids it
+    is meant to catch cannot drift to different shapes.
+    """
+    return f"{ISSUE_DUPLICATE_DEVICE}_{entry_id}_{device_id}"
+
+
+def is_duplicate_device_issue(issue_id: str) -> bool:
+    """Say whether *issue_id* is one of the ids :func:`duplicate_device_issue_id` builds.
+
+    The repairs dispatcher has to answer "is this issue mine to fix" from the
+    raw issue id alone — it is handed no ``entry_id``, so it cannot ask the
+    builder for a prefix the way ``clear_duplicate_device_issues`` does.  The
+    test therefore lives here, beside the builder and off the same
+    ``ISSUE_DUPLICATE_DEVICE`` leading segment, rather than as a third
+    hand-spelled ``startswith`` in ``repairs.py``: that module asks the
+    question and never learns the shape of the answer.
+    """
+    return issue_id.startswith(ISSUE_DUPLICATE_DEVICE)
+
+
 # Generous debounce so integration restarts / device re-adds don't nag before
 # a genuinely dead sensor is flagged.
 DEFAULT_SENSOR_HEALTH_DEBOUNCE_SECONDS = 900.0
@@ -1081,6 +1145,23 @@ CONF_CLOUD_COVERAGE_ENTITY = "cloud_coverage_entity"  # cloud-cover % sensor
 CONF_CLOUD_COVERAGE_THRESHOLD = "cloud_coverage_threshold"
 CONF_CLOUD_SUPPRESSION = "cloud_suppression"  # master enable
 CONF_CLOUDY_POSITION = "cloudy_position"  # position while suppressed (0-100)
+# Slat angle commanded alongside that position while suppression holds (range
+# 0-100, issue #175). Surfaced only on cover types whose policy sets
+# CoverTypePolicy.cloud_suppression_includes_tilt — venetians today, because
+# they are the only type with a slat axis independent of the carriage. Has NO
+# default: absent means the handler names no tilt and the slats are left where
+# the previous cycle put them, which is the pre-#175 behaviour.
+CONF_CLOUDY_TILT = "cloudy_tilt"
+# How long cloud suppression may keep holding before it gives up on the cloudy
+# position/slat angle and opens the cover fully (issue #175). A
+# DurationSelector dict, NOT seconds — the runtime slice converts it. This is
+# NOT the smoothing hold-time below: that one decides how fast suppression
+# ENGAGES, this one decides how long it may STAY engaged. Has NO default:
+# absent — or an all-zero duration, which is what the selector stores for a
+# blank field — means no escalation ever, which is the pre-#175 behaviour (so
+# no config migration). A brief sunny spell resets the clock; the smoothing
+# hold-time below is the debounce for riding out short gaps.
+CONF_CLOUD_ESCALATION_DELAY = "cloud_escalation_delay"
 
 # Smoothing controls (issue #864). All default to today's instantaneous,
 # single-crossing behaviour so an absent key changes nothing on upgrade/rollback.
@@ -2129,8 +2210,22 @@ class ReasonCode(StrEnum):
     FRAGMENT_SUNSET_POSITION = "fragment.sunset_position"
     FRAGMENT_DEFAULT_POSITION = "fragment.default_position"
     FRAGMENT_CLOUDY_POSITION = "fragment.cloudy_position"
+    # The cloudy position's replacement once a hold outlives the configured
+    # escalation delay (issue #175). A separate fragment, not a suffix on
+    # ``fragment.cloudy_position``: the escalated branch fires with no cloudy
+    # position configured at all, so there is nothing for a suffix to attach to.
+    FRAGMENT_CLOUD_ESCALATED_POSITION = "fragment.cloud_escalated_position"
     FRAGMENT_COVERAGE_STEP = "fragment.coverage_step"
     FRAGMENT_Z_ADJUSTED = "fragment.z_adjusted"
+    # Names the gate sensors holding sun tracking shut (issue #1359). A
+    # fragment, not a second skip code, so the base reason keeps its exact
+    # pre-#1359 wording when no sensor can be named (a template-closed gate).
+    FRAGMENT_GATE_BLOCKED_BY = "fragment.gate_blocked_by"
+    # Three whole clauses rather than one composed from parts: each reads as a
+    # complete sentence fragment, so a translator controls where the conjunction
+    # goes instead of inheriting English word order from a join (#1359).
+    FRAGMENT_GATE_BLOCKED_BY_TEMPLATE = "fragment.gate_blocked_by_template"
+    FRAGMENT_GATE_BLOCKED_BY_BOTH = "fragment.gate_blocked_by_both"
     FRAGMENT_BYPASS_NOTE = "fragment.bypass_note"
     FRAGMENT_SEASON_EXTREME_HEAT = "fragment.season_extreme_heat"
     FRAGMENT_SEASON_TRACKING_OFF = "fragment.season_tracking_off"
@@ -2362,6 +2457,8 @@ class TriageCode(StrEnum):
     WEATHER_OVERRIDE_INVERTED = "triage.weather_override_inverted"
     # -- rule 27: an internal-mounted cover rejects little solar energy (#1236)
     SOLAR_INTERNAL_COVER_WEAK_REJECTION = "triage.solar_internal_cover_weak_rejection"
+    # -- rule 28: a sun-tracking gate sensor is holding tracking shut (#1359)
+    SUN_TRACKING_GATE_CLOSED = "triage.sun_tracking_gate_closed"
     # -- fragment (NOT a rule): the localized "N minutes ago" clause the three
     # skip findings splice in when a skip timestamp is known. Rendered only as a
     # nested param of the skip templates, never emitted as a top-level finding —
@@ -2374,6 +2471,11 @@ class TriageCode(StrEnum):
     # it. Spliced as nested params, exactly like SKIP_AGE.
     SOLAR_SHADE_WORD = "triage.solar_shade_word"
     SOLAR_EXTERNAL_COMPARISON = "triage.solar_external_comparison"
+    # -- fragment (NOT a rule): rule 28's optional "by <entities>" clause, absent
+    # when a template rather than a sensor closed the gate (#1359).
+    SUN_TRACKING_GATE_BLOCKER = "triage.sun_tracking_gate_blocker"
+    SUN_TRACKING_GATE_BLOCKER_TEMPLATE = "triage.sun_tracking_gate_blocker_template"
+    SUN_TRACKING_GATE_BLOCKER_BOTH = "triage.sun_tracking_gate_blocker_both"
 
 
 # =============================================================================
@@ -2643,6 +2745,13 @@ _RANGE_TILT_SAFETY_MARGIN = (
 )  # CONF_TILT_SAFETY_MARGIN, 0.0-1.0 fraction of the slat-closing slack budget
 # Legacy alias (#964) so any name-based lookup of the old range still resolves.
 _RANGE_VENETIAN_TILT_SAFETY_MARGIN = _RANGE_TILT_SAFETY_MARGIN
+# CONF_TILT_MIN_REFLECTED_ELEVATION, degrees above the inward horizontal
+# (0 = disabled). Capped at 90°: a floor beyond straight up is unreachable, and
+# at 90 the derived cap ``90 + (beta - N)/2`` still cannot fall below 45° for
+# any above-horizon beta, well inside the slat's direct-sun blocking band. (The
+# 45° figure is a bound on beta >= 0; beta goes negative below the horizon,
+# where the solar handler's valid_elevation gate keeps this code unreachable.)
+_RANGE_TILT_MIN_REFLECTED_ELEVATION = (0, 90)
 
 # Sun tracking.
 _RANGE_AZIMUTH = (0, 359)  # CONF_AZIMUTH, degrees
@@ -2685,6 +2794,9 @@ _RANGE_INTERP_VALUE = (0, 100)  # interp start/end, percent
 
 # Sun-tracking movement minimization.
 _RANGE_MAX_COVERAGE_STEPS = (1, 10)  # CONF_MAX_COVERAGE_STEPS, discrete levels
+
+# Sun-tracking snap-closed declutter (issue #1379).
+_RANGE_SNAP_CLOSED_THRESHOLD = (1, 50)  # CONF_SNAP_CLOSED_THRESHOLD, percent
 
 # Automation timing.
 _RANGE_DELTA_POSITION = (1, 90)  # CONF_DELTA_POSITION, percent
@@ -2930,6 +3042,29 @@ class AxisConstraintMode(StrEnum):
     MIN = "min"
     MAX = "max"
     RANGE = "range"
+
+
+class CloudSuppressionPhase(StrEnum):
+    """How far along a continuous cloud-suppression hold is (issue #175).
+
+    Wire-stable identifiers: published in the diagnostics dump and as an
+    attribute of the ``cloud_escalation_end_time`` sensor, so a triage read can
+    tell "holding the cloudy position" from "gave up and opened" without
+    recomputing a deadline.
+
+    ``IDLE``       Suppression is not resolved-active. The absence of a hold,
+                   not a hold that has run for zero seconds.
+    ``HOLDING``    Suppression is active and either no escalation delay is
+                   configured — hold for as long as the cloud lasts, the
+                   pre-#175 behaviour — or the derived deadline is still ahead.
+    ``ESCALATED``  Suppression has held continuously past the derived deadline,
+                   so the handler answers with the unshaded position instead of
+                   the cloudy one.
+    """
+
+    IDLE = "idle"
+    HOLDING = "holding"
+    ESCALATED = "escalated"
 
 
 class GroupScene(StrEnum):

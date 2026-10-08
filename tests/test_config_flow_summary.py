@@ -27,6 +27,7 @@ from custom_components.adaptive_cover_pro.const import (
     CONF_CLOUD_COVERAGE_THRESHOLD,
     CONF_CLOUD_SUPPRESSION,
     CONF_CLOUDY_POSITION,
+    CONF_CLOUDY_TILT,
     CONF_DEFAULT_HEIGHT,
     CONF_DELTA_POSITION,
     CONF_DELTA_TIME,
@@ -432,6 +433,37 @@ def test_geometry_tilt_shows_the_three_point_midpoint():
         assert "horizontal at" not in preset
 
 
+def test_geometry_tilt_shows_the_reflected_sun_floor():
+    """The reflected-beam floor (#1282) renders whenever it is switched on.
+
+    Unlike the three-point mid-point it is NOT scoped to ``specify_angles`` —
+    the constraint applies on every preset — so it renders on both, and on both
+    the tilt-only and the venetian summary, which are separate renderers over
+    the one shared geometry fragment.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_TILT_MIN_REFLECTED_ELEVATION,
+    )
+
+    base = {
+        CONF_TILT_DEPTH: 8.0,
+        CONF_TILT_DISTANCE: 7.5,
+    }
+    for cover_type in (CoverType.TILT, CoverType.VENETIAN):
+        for mode in ("mode2", "specify_angles"):
+            cfg = {**base, CONF_TILT_MODE: mode}
+            enabled = _build_config_summary(
+                {**cfg, CONF_TILT_MIN_REFLECTED_ELEVATION: 30}, cover_type
+            )
+            assert "reflected sun kept at least 30° up" in enabled, (cover_type, mode)
+
+            # The 0 sentinel is the disabled state — nothing to report.
+            disabled = _build_config_summary(
+                {**cfg, CONF_TILT_MIN_REFLECTED_ELEVATION: 0}, cover_type
+            )
+            assert "reflected sun kept at least" not in disabled, (cover_type, mode)
+
+
 def test_geometry_louvered_roof_shows_slat_and_pitch_fields():
     """Louvered roof renders the shared slat block plus the roof-plane pitch."""
     from custom_components.adaptive_cover_pro.const import CONF_ROOF_PITCH
@@ -807,6 +839,442 @@ def test_minimize_movements_absent_when_sun_tracking_disabled():
     assert "Minimize movements" not in summary
 
 
+def test_snap_closed_below_omitted_when_disabled():
+    """No snap-closed line when the feature is off (default) — issue #1379."""
+    summary = _build_config_summary({CONF_AZIMUTH: 180}, CoverType.BLIND)
+    assert "Snap closed below" not in summary
+
+
+def test_snap_closed_below_shows_threshold_when_enabled():
+    """The configured threshold surfaces in the solar-tracking bullet."""
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 15,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "Snap closed below" in summary
+    assert "15%" in summary
+
+
+def test_snap_closed_below_absent_when_sun_tracking_disabled():
+    """The line lives under the ☀️ tracking branch; gone when tracking is off."""
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_ENABLE_SUN_TRACKING,
+        CONF_SNAP_CLOSED_BELOW,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_ENABLE_SUN_TRACKING: False,
+        CONF_SNAP_CLOSED_BELOW: True,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "Snap closed below" not in summary
+
+
+def test_summary_warns_when_snap_closed_threshold_conflicts_with_min_position():
+    """Footgun: an active min_pos floor at/above the threshold makes the snap inert.
+
+    ``apply_config_limits`` runs after the snap and always wins (floor-wins
+    rule). Once min_pos is at or above the snap threshold, it already
+    dominates every value the snap band could produce, so enabling the
+    setting can never change the outcome.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MIN_POSITION: 20,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "⚠️" in summary
+    assert "10%" in summary
+    assert "20%" in summary
+
+
+def test_summary_warning_uses_sun_tracking_min_when_more_specific():
+    """The conflict check prefers the sun-tracking-only floor when it is set.
+
+    ``apply_limits`` uses ``min_pos_sun_tracking`` as the effective floor
+    during sun tracking whenever it is set, overriding ``min_pos`` (see
+    ``PositionConverter.apply_limits``). Here plain min_pos (5) alone would
+    NOT conflict with a threshold of 10, but the sun-tracking-only floor (20)
+    does — proving the summary's conflict check reads the same effective
+    floor the pipeline actually applies, not the always-on min_pos alone.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_MIN_POSITION_SUN_TRACKING,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MIN_POSITION: 5,
+        CONF_MIN_POSITION_SUN_TRACKING: 20,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "⚠️" in summary
+    assert "10%" in summary
+    assert "20%" in summary
+
+
+def test_summary_no_false_positive_warning_for_awning_min_position():
+    """Awning min_position never interacts with the snap (#1379 audit fix).
+
+    The snap targets the CLOSED end for an awning, which is 100, not 0. A
+    numeric min_position floor never conflicts with a target of 100
+    (``max(100, min_pos) == 100`` for any ``min_pos <= 100``), so this must
+    never warn — even though the blind-polarity condition
+    (``effective_min >= threshold``) would incorrectly fire here if the
+    check ignored axis polarity.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MIN_POSITION: 20,
+    }
+    summary = _build_config_summary(cfg, CoverType.AWNING)
+    assert "can never take effect" not in summary
+
+
+def test_summary_warns_at_the_exact_blind_inert_boundary():
+    """Off-by-one audit fix: effective_min == threshold - 1 IS inert (blind axis).
+
+    Snap band is percentage in {1, ..., threshold-1} (integers, from
+    ``gap_to_closed_pct = percentage`` and ``0 < gap < threshold``). With
+    min_pos=9 and threshold=10, EVERY band member floors to 9 whether the
+    snap fires or not (max(P, 9) == 9 for every P in {1..9}, and
+    max(0, 9) == 9 too) — fully inert, so this must warn even though the
+    pre-fix ``effective_min >= threshold`` condition (9 >= 10) said it
+    wasn't.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MIN_POSITION: 9,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "can never take effect" in summary
+    # Remedy bounds: lower below (threshold-1)=9, or raise above (min_pos+1)=10.
+    assert "below 9%" in summary
+    assert "above 10%" in summary
+
+
+def test_summary_no_warning_just_past_the_blind_inert_boundary():
+    """One point below the blind boundary is genuinely NOT inert.
+
+    min_pos=8 differs from the snap for band members 5-9 (max(P, 8) == P
+    for P in {5..9}, but max(0, 8) == 8) — the setting has a real effect,
+    so no warning.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MIN_POSITION: 8,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "can never take effect" not in summary
+
+
+def test_summary_warns_at_the_exact_awning_inert_boundary():
+    """Off-by-one audit fix: max_pos == 101 - threshold IS inert (awning axis).
+
+    Snap band is percentage in {101-threshold, ..., 99} (integers, from
+    ``gap_to_closed_pct = 100 - percentage`` and ``0 < gap < threshold``).
+    With max_pos=91 and threshold=10, EVERY band member (91..99) clamps to
+    91 whether the snap fires or not (min(P, 91) == 91 for every P in
+    {91..99}, and min(100, 91) == 91 too) — fully inert, matching the
+    audited concrete miss exactly.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MAX_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MAX_POSITION: 91,
+    }
+    summary = _build_config_summary(cfg, CoverType.AWNING)
+    assert "can never take effect" in summary
+    # Remedy bounds: raise above (101-threshold)=91, or raise above (101-max_pos)=10.
+    assert "above 91%" in summary
+    assert "above 10%" in summary
+
+
+def test_summary_no_warning_just_past_the_awning_inert_boundary():
+    """One point above the awning boundary is genuinely NOT inert.
+
+    max_pos=92 differs from the snap for band members 91 (min(91, 92) ==
+    91, but a snapped 100 clamps to min(100, 92) == 92) — the setting has
+    a real effect, so no warning. This is exactly the audit's stated "need
+    >= 92 to see any effect" boundary.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MAX_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MAX_POSITION: 92,
+    }
+    summary = _build_config_summary(cfg, CoverType.AWNING)
+    assert "can never take effect" not in summary
+
+
+def test_summary_no_false_positive_for_default_min_position_at_smallest_threshold():
+    """min_pos=0 (the default / "no floor") must never register as inert.
+
+    A guard the off-by-one fix's own arithmetic needs, not merely inherits:
+    ``effective_min >= threshold - 1`` alone would flag min_pos=0 at
+    threshold=1 (0 >= 0) even though ``PositionConverter.apply_limits``
+    treats a 0 floor as no floor at all (``effective_min != 0`` gates the
+    clamp) — there is nothing there to make the snap inert.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 1,
+        CONF_MIN_POSITION: 0,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "can never take effect" not in summary
+
+
+def test_summary_no_false_positive_for_default_max_position_at_smallest_threshold():
+    """max_pos=100 (the default / "no ceiling") must never register as inert.
+
+    Mirror of ``test_summary_no_false_positive_for_default_min_position_at_
+    smallest_threshold``. ``max_pos <= 101 - threshold`` alone would flag
+    max_pos=100 at threshold=1 (100 <= 100) even though
+    ``PositionConverter.apply_config_limits`` never applies that ceiling at
+    all (``max_pos != 100`` gates the clamp) — there is nothing there to
+    make the snap inert.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MAX_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 1,
+        CONF_MAX_POSITION: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.AWNING)
+    assert "can never take effect" not in summary
+
+
+def test_summary_warns_for_awning_when_max_position_makes_snap_inert():
+    """Awning max_position is the mirror of the blind axis's min_position case.
+
+    The snap targets 100 for an awning; ``apply_config_limits`` clamps ANY
+    value down to ``max_position`` regardless of the snap, so a ceiling of
+    80 with threshold=10 swallows the entire (90, 100) snap band — the
+    setting can never take effect. The pre-fix condition (checking only
+    min_position) produced no warning at all here.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MAX_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MAX_POSITION: 80,
+    }
+    summary = _build_config_summary(cfg, CoverType.AWNING)
+    assert "can never take effect" in summary
+    assert "10%" in summary
+    assert "80%" in summary
+
+
+def test_summary_no_warning_when_min_position_below_snap_threshold():
+    """No footgun warning when min_pos sits below the threshold (snap still bites).
+
+    The floor only makes the snap fully inert when it is AT OR ABOVE the
+    threshold (every value the snap band could produce is already dominated
+    by the floor either way). With min_pos=5 < threshold=10, a demand between
+    5 and 10 is genuinely different with the snap on (collapses to 0, then
+    floors to 5) versus off (stays untouched, above the floor) — no conflict.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_MIN_POSITION,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+        CONF_MIN_POSITION: 5,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "always-on floor" not in summary
+
+
+def test_summary_warns_when_snap_group_mixes_positionable_and_open_close_only():
+    """Floor-active footgun (round 1 OPTIONAL 5): a mixed cover group defeats
+    the snap's promise of a true 0%.
+
+    ``PipelineSnapshot.solar_floor_active`` is on whenever NOT every bound
+    entity supports the position axis (the conservative mixed-instance rule,
+    issue #569) — so one open/close-only cover in an otherwise
+    position-capable group keeps ``solar_floor`` active for the WHOLE group.
+    ``solar_floor`` runs after the snap, so a demand it collapses to 0 is
+    floored back up to ``SOLAR_TRACKING_FLOOR_PCT`` (1%) instead of reaching
+    the true 0% the field description promises — silently, since only the
+    live pipeline (not the static config) knows this. Reuses the SAME
+    capability data ``check_cover_capabilities`` already resolves from
+    ``hass`` for the "Cover Warnings" section, rather than re-deriving it.
+    """
+    from homeassistant.components.cover import CoverEntityFeature
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_ENTITIES,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    hass = _make_hass(
+        {
+            "cover.blind": {"supported_features": CoverEntityFeature.SET_POSITION},
+            "cover.dumb_blind": {
+                "supported_features": CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
+            },
+        }
+    )
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_ENTITIES: ["cover.blind", "cover.dumb_blind"],
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND, hass)
+    assert "1%" in summary
+    assert "true 0%" in summary
+
+
+def test_summary_no_floor_active_warning_when_every_cover_is_positionable():
+    """No floor-active warning when every bound cover supports set_position.
+
+    ``all_positionable`` is True here, so ``solar_floor_active`` is False at
+    runtime and the snap really does reach a true 0% — nothing to warn about.
+    """
+    from homeassistant.components.cover import CoverEntityFeature
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_ENTITIES,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    hass = _make_hass(
+        {
+            "cover.blind": {"supported_features": CoverEntityFeature.SET_POSITION},
+            "cover.blind_2": {"supported_features": CoverEntityFeature.SET_POSITION},
+        }
+    )
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_ENTITIES: ["cover.blind", "cover.blind_2"],
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND, hass)
+    assert "true 0%" not in summary
+
+
+def test_summary_no_floor_active_warning_when_every_cover_is_open_close_only():
+    """No floor-active warning when NO bound cover can reach a numeric position.
+
+    Every entity here is open/close-only, so none of them would ever receive
+    the literal snapped-to-closed percentage in the first place — the
+    1%-vs-0% distinction the floor-active warning exists for is moot. This
+    is the mirror of the mixed-group positive case: floor_active is True
+    here too, but there is no position-capable cover for it to matter to.
+    """
+    from homeassistant.components.cover import CoverEntityFeature
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_ENTITIES,
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    hass = _make_hass(
+        {
+            "cover.dumb_blind": {
+                "supported_features": CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
+            },
+            "cover.dumb_blind_2": {
+                "supported_features": CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
+            },
+        }
+    )
+    cfg = {
+        CONF_AZIMUTH: 180,
+        CONF_ENTITIES: ["cover.dumb_blind", "cover.dumb_blind_2"],
+        CONF_SNAP_CLOSED_BELOW: True,
+        CONF_SNAP_CLOSED_THRESHOLD: 10,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND, hass)
+    assert "true 0%" not in summary
+
+
 # ---------------------------------------------------------------------------
 # Section 2: Timing
 # ---------------------------------------------------------------------------
@@ -919,6 +1387,22 @@ def test_blank_start_with_no_end_does_not_show_from_sunrise():
     summary = _build_config_summary(cfg, CoverType.BLIND)
     assert "from sunrise" not in summary
     assert "Active during daylight" in summary
+
+
+def test_blank_string_end_bound_does_not_render_from_sunrise():
+    """An empty-string end bound is no end bound — and the runtime now agrees.
+
+    Issue #1061. This summary and ``TimeWindowManager.after_start_time`` are
+    two renderings of the same question, "is an end bound configured?", and
+    they used to be two different implementations of it: the summary's
+    hand-rolled ``bool(end_entity) or ...`` said ``""`` was unconfigured while
+    the manager's ``_bound_is_configured`` said it was configured, so the
+    summary printed an unbounded window while the runtime held it shut until
+    sunrise. Both now route through ``helpers.has_configured_window_end``.
+    """
+    cfg = {CONF_END_ENTITY: "", CONF_END_TIME: ""}
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "from sunrise" not in summary
 
 
 def test_sunrise_gates_start_renders_line_with_start_time():
@@ -3576,7 +4060,16 @@ def test_cloudy_position_zero_is_shown_not_skipped():
 
 
 def test_cloudy_position_set_without_suppression_shows_warning():
-    """⚠️ warning when cloudy_position is set but cloud suppression is disabled."""
+    """⚠️ warning when cloudy_position is set but cloud suppression is disabled.
+
+    Deliberately revised for #175: the single-key ``warnings.cloudy_pos_ignored``
+    became the unified ``warnings.cloud_settings_ignored``, which lists whichever
+    Light & Cloud targets are configured. The behaviour this test guards — a
+    configured cloudy position with the master toggle off warns the user — is
+    unchanged; only the sentence it warns with is. The rendered fragment is now
+    asserted explicitly rather than by substring sniffing, so a future fourth
+    setting cannot quietly drop this one from the list.
+    """
     cfg = {
         CONF_CLOUD_SUPPRESSION: False,
         CONF_CLOUDY_POSITION: 25,
@@ -3584,6 +4077,7 @@ def test_cloudy_position_set_without_suppression_shows_warning():
     summary = _build_config_summary(cfg, CoverType.BLIND)
     assert "⚠️" in summary
     assert "cloud suppression" in summary.lower()
+    assert "cloudy position 25%" in summary
 
 
 def test_cloudy_position_no_warning_when_suppression_on():
@@ -5228,3 +5722,121 @@ def test_weather_tilt_min_mode_warning_absent_without_a_tilt():
     del cfg[CONF_WEATHER_OVERRIDE_TILT]
     summary = _build_config_summary(cfg, CoverType.VENETIAN)
     assert _WX_TILT_MIN_MODE_PHRASE not in summary
+
+
+# ---------------------------------------------------------------------------
+# cloudy_tilt summary + the unified ignored-settings warning (issue #175)
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_line_shows_the_cloudy_tilt_for_a_venetian():
+    """The slat target rides the cloud line beside the carriage target.
+
+    Reuses ``custom.tilt_note`` — the same ", tilt {tilt}%" fragment the
+    custom-position and weather lines already use, because it says exactly the
+    same thing about the same axis.
+    """
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: True,
+        CONF_CLOUDY_POSITION: 0,
+        CONF_CLOUDY_TILT: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.VENETIAN)
+    cloud_line = next(ln for ln in summary.splitlines() if "Cloud suppression" in ln)
+    assert "cloudy position 0%" in cloud_line
+    assert "tilt 100%" in cloud_line
+
+
+def test_cloudy_tilt_of_zero_is_shown_not_skipped():
+    """0% = slats closed, a real privacy setting, not "unset"."""
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: True,
+        CONF_CLOUDY_POSITION: 100,
+        CONF_CLOUDY_TILT: 0,
+    }
+    summary = _build_config_summary(cfg, CoverType.VENETIAN)
+    cloud_line = next(ln for ln in summary.splitlines() if "Cloud suppression" in ln)
+    assert "tilt 0%" in cloud_line
+
+
+def test_cloud_line_hides_a_stored_cloudy_tilt_on_a_single_axis_cover():
+    """A stored slat angle must not promise slat movement to a cover with no slats.
+
+    The key survives a venetian → blind cover-type switch (#1132 deletes
+    nothing) and ``acp.set_light_cloud`` has no cover-type gate, so the summary
+    must consult the policy rather than the stored value — the same rule the
+    weather line follows for ``weather_override_tilt`` (#1297).
+    """
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: True,
+        CONF_CLOUDY_POSITION: 0,
+        CONF_CLOUDY_TILT: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    cloud_line = next(ln for ln in summary.splitlines() if "Cloud suppression" in ln)
+    assert "cloudy position 0%" in cloud_line
+    assert "tilt" not in cloud_line
+
+
+def test_cloudy_tilt_set_without_suppression_is_listed_in_the_warning():
+    """The footgun: a slat target configured while the master toggle is off."""
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: False,
+        CONF_CLOUDY_TILT: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.VENETIAN)
+    assert "⚠️" in summary
+    assert "cloudy slat angle 100%" in summary
+
+
+def test_ignored_cloud_settings_share_one_warning_line():
+    """Both targets configured with suppression off → ONE line naming both.
+
+    The unified guard, asserted as a unification rather than as two warnings:
+    three mirrored ``if`` blocks would emit three ⚠️ lines saying the same
+    thing about the same disabled toggle.
+    """
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: False,
+        CONF_CLOUDY_POSITION: 25,
+        CONF_CLOUDY_TILT: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.VENETIAN)
+    warning_lines = [
+        ln
+        for ln in summary.splitlines()
+        if "⚠️" in ln and "cloud suppression" in ln.lower()
+    ]
+    assert len(warning_lines) == 1
+    assert "cloudy position 25%" in warning_lines[0]
+    assert "cloudy slat angle 100%" in warning_lines[0]
+
+
+def test_no_ignored_warning_when_suppression_is_on():
+    """Both targets configured and the toggle on → nothing to warn about."""
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: True,
+        CONF_CLOUDY_POSITION: 25,
+        CONF_CLOUDY_TILT: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.VENETIAN)
+    assert not [
+        ln
+        for ln in summary.splitlines()
+        if "⚠️" in ln and "will be ignored" in ln.lower()
+    ]
+
+
+def test_stored_cloudy_tilt_is_not_warned_about_on_a_single_axis_cover():
+    """A cover with no slat axis must not be warned about a field it cannot see.
+
+    The same policy gate as the cloud line: the value is inert for this cover
+    type whether or not suppression is on, and pointing the user at the master
+    toggle would send them looking for a slider their form never renders.
+    """
+    cfg = {
+        CONF_CLOUD_SUPPRESSION: False,
+        CONF_CLOUDY_TILT: 100,
+    }
+    summary = _build_config_summary(cfg, CoverType.BLIND)
+    assert "slat angle" not in summary

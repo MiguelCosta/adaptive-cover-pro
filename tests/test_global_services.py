@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers import device_registry as dr
 
 from custom_components.adaptive_cover_pro.services import (
     _resolve_targets,
@@ -24,6 +25,7 @@ from custom_components.adaptive_cover_pro.services import (
     async_unload_services,
     loaded_coordinators,
 )
+from tests.ha_helpers import device_owned_by
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -155,11 +157,9 @@ def test_resolve_device_id_maps_to_coordinator():
     coord_a = _make_coordinator(["cover.a"])
     hass = _make_hass({"entry_abc": coord_a})
 
-    fake_device = MagicMock()
-    fake_device.config_entries = ["entry_abc"]
-    fake_device.area_id = None
+    fake_device = device_owned_by("entry_abc", area_id=None)
 
-    dev_reg_mock = MagicMock()
+    dev_reg_mock = MagicMock(spec=dr.DeviceRegistry)
     dev_reg_mock.async_get = MagicMock(return_value=fake_device)
 
     call = _make_call(device_id="device_xyz")
@@ -179,13 +179,10 @@ def test_resolve_entity_id_within_device_coordinator_not_narrowed():
     coord_a = _make_coordinator(["cover.a", "cover.b"])
     hass = _make_hass({"entry_abc": coord_a})
 
-    fake_device = MagicMock()
-    fake_device.config_entries = ["entry_abc"]
-    fake_device.area_id = None
+    fake_device = device_owned_by("entry_abc", area_id=None)
 
-    dev_reg_mock = MagicMock()
+    dev_reg_mock = MagicMock(spec=dr.DeviceRegistry)
     dev_reg_mock.async_get = MagicMock(return_value=fake_device)
-    dev_reg_mock.devices = {}  # no area expansion needed
 
     call = MagicMock()
     call.data = {
@@ -240,14 +237,12 @@ def test_resolve_string_device_id_normalized():
 
     full_device_id = "device_xyz"
 
-    fake_device = MagicMock()
-    fake_device.config_entries = ["entry_abc"]
-    fake_device.area_id = None
+    fake_device = device_owned_by("entry_abc", area_id=None)
 
     def _discriminating_get(device_id):
         return fake_device if device_id == full_device_id else None
 
-    dev_reg_mock = MagicMock()
+    dev_reg_mock = MagicMock(spec=dr.DeviceRegistry)
     dev_reg_mock.async_get = MagicMock(side_effect=_discriminating_get)
 
     call = _make_call(device_id=full_device_id, raw=True)
@@ -263,37 +258,55 @@ def test_resolve_string_device_id_normalized():
 
 
 def test_resolve_string_area_id_normalized():
-    """RAW string area_id (not list-wrapped) must expand and resolve correctly."""
+    """RAW string area_id (not list-wrapped) must expand and resolve correctly.
+
+    Scope: this pins *normalization* — the shape in which a raw ``area_id``
+    reaches the expansion — and stops at the seam. The behavioural witness
+    that the expansion really walks a registry is
+    ``test_group_services.py::test_cover_target_resolution_by_area``, which
+    drives this same ``_resolve_targets`` area branch through a real area and
+    device registry (and its empty-area twin alongside it). Breaking
+    ``area_device_ids`` fails that test, so the end-to-end hop is covered; it
+    lives there because this module is deliberately mock-only and has no
+    ``hass``.
+    """
     coord_a = _make_coordinator(["cover.a"])
     hass = _make_hass({"entry_abc": coord_a})
 
-    # The area device
-    area_device = MagicMock()
-    area_device.area_id = "area_living"
-    area_device.id = "device_xyz"
-
     # Config entry device
-    config_device = MagicMock()
-    config_device.config_entries = ["entry_abc"]
-    config_device.area_id = None
+    config_device = device_owned_by("entry_abc", area_id=None)
 
-    dev_reg_mock = MagicMock()
-    # devices.values() used for area expansion
-    dev_reg_mock.devices = MagicMock()
-    dev_reg_mock.devices.values = MagicMock(return_value=[area_device])
+    # Spec'd to the real class: ``DeviceRegistry.devices`` is annotation-only,
+    # so a spec'd mock raises on any reach for the registry's own index rather
+    # than auto-vivifying one that silently iterates empty (issue #1373).
+    dev_reg_mock = MagicMock(spec=dr.DeviceRegistry)
     # async_get called for device_id resolution
     dev_reg_mock.async_get = MagicMock(return_value=config_device)
-    config_device.config_entries = ["entry_abc"]
 
     call = _make_call(area_id="area_living", raw=True)
 
-    with patch(
-        "custom_components.adaptive_cover_pro.services.dr.async_get",
-        return_value=dev_reg_mock,
+    # The area → devices hop lives in ``state.area_resolver.area_device_ids``
+    # and nothing else (test_registry_index_guard.py pins that), so this patch
+    # sits on the seam ``services`` actually depends on.
+    with (
+        patch(
+            "custom_components.adaptive_cover_pro.services.dr.async_get",
+            return_value=dev_reg_mock,
+        ),
+        patch(
+            "custom_components.adaptive_cover_pro.services.area_device_ids",
+            side_effect=lambda _hass, area_id: (
+                ["device_xyz"] if area_id == "area_living" else []
+            ),
+        ) as expand,
     ):
         result = _resolve_targets(hass, call)
 
     assert coord_a in result, "coordinator not found when area_id is a raw string"
+    # Normalization is the point of the test: the raw string must reach the
+    # expansion as the bare area id, exactly once — not as a list, not
+    # character by character.
+    expand.assert_called_once_with(hass, "area_living")
 
 
 def test_resolve_explicit_target_no_match_logs_warning(caplog):

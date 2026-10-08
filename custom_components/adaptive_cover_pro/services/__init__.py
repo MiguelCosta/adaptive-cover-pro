@@ -22,6 +22,8 @@ if TYPE_CHECKING:
 
 from ..const import DOMAIN
 from ..helpers import usable_coordinator
+from ..state.area_resolver import area_device_ids
+from ..state.device_link import device_config_entry_ids
 from .diagnostics_service import async_handle_get_diagnostics
 from .group_service import GROUP_SERVICE_NAMES, register_group_services
 from .engage_manual_override_service import (
@@ -202,13 +204,8 @@ def _resolve_targets(
     device_ids: list[str] = cv.ensure_list(call.data.get("device_id"))
     area_ids: list[str] = cv.ensure_list(call.data.get("area_id"))
 
-    # Expand area_ids → device_ids
-    if area_ids:
-        dev_reg = dr.async_get(hass)
-        for area_id in area_ids:
-            for device in dev_reg.devices.values():
-                if device.area_id == area_id:
-                    device_ids.append(device.id)
+    for area_id in area_ids:
+        device_ids.extend(area_device_ids(hass, area_id))
 
     # No target at all → all coordinators, no filter
     if not entity_ids and not device_ids and not area_ids:
@@ -222,7 +219,7 @@ def _resolve_targets(
         for device_id in device_ids:
             device = dev_reg.async_get(device_id)
             if device:
-                for entry_id in device.config_entries:
+                for entry_id in device_config_entry_ids(device):
                     if entry_id in all_coordinators:
                         coord = all_coordinators[entry_id]
                         result.setdefault(coord, None)

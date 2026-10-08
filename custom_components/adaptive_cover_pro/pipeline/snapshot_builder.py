@@ -46,6 +46,7 @@ from ..const import (
     CONF_CLOUD_COVERAGE_THRESHOLD,
     CONF_CLOUD_SUPPRESSION,
     CONF_CLOUDY_POSITION,
+    CONF_CLOUDY_TILT,
     CONF_DEFAULT_TILT,
     CONF_DELTA_TIME,
     CONF_DEVICE_ID,
@@ -84,6 +85,8 @@ from ..const import (
     CONF_PRESENCE_TEMPLATE,
     CONF_PRESENCE_TEMPLATE_MODE,
     CONF_EXTREME_HEAT_POSITION,
+    CONF_SNAP_CLOSED_BELOW,
+    CONF_SNAP_CLOSED_THRESHOLD,
     CONF_SUMMER_CLOSE_BYPASS_SUN_FLOOR,
     CONF_SUNSET_TILT,
     CONF_SUNSET_USE_MY,
@@ -119,6 +122,8 @@ from ..const import (
     DEFAULT_MINIMIZE_MOVEMENTS,
     DEFAULT_MOTION_TIMEOUT_MODE,
     DEFAULT_OUTSIDE_TEMP_SOURCE,
+    DEFAULT_SNAP_CLOSED_BELOW,
+    DEFAULT_SNAP_CLOSED_THRESHOLD,
     DEFAULT_TEMPLATE_COMBINE_MODE,
     DEFAULT_WEATHER_OUTSIDE_WINDOW,
 )
@@ -141,6 +146,7 @@ from .types import (
     CustomPositionSensorState,
     GroupIntent,
     PipelineSnapshot,
+    SunTrackingState,
     has_fixed_tilt,
 )
 
@@ -416,10 +422,10 @@ class PipelineSnapshotBuilder:
         ]
         return min(remainings) if remainings else None
 
-    def _resolve_sun_tracking(self, options: Mapping[str, Any]) -> tuple[bool, bool]:
+    def _resolve_sun_tracking(self, options: Mapping[str, Any]) -> SunTrackingState:
         """Whether sun tracking is live this cycle, and whether a gate closed it.
 
-        Returns ``(enable_sun_tracking, gate_closed)``. The single place the
+        Returns a :class:`SunTrackingState`. The single place the
         master toggle and the gate combine (issue #1167). Everything downstream —
         ``SolarHandler``, and the glare-zone handler's sun-only limits, which
         already read the first value as "the live tracking state" — sees one
@@ -449,9 +455,22 @@ class PipelineSnapshotBuilder:
             ),
         )
         if not bool(options.get(CONF_ENABLE_SUN_TRACKING, True)):
-            return False, False
-        tracking = self._sun_tracking_gate.resolved(default=True)
-        return tracking, not tracking
+            return SunTrackingState(enabled=False)
+        if self._sun_tracking_gate.resolved(default=True):
+            # Tracking is live, so there is nothing to explain and no blocker to
+            # name (issue #1359).
+            return SunTrackingState(enabled=True)
+        # ``blocking_sensors`` answers "did the SENSORS close it", which is not
+        # the same question as "is the gate closed": in AND mode a false template
+        # closes a gate the sensors voted open, and it correctly returns empty
+        # there rather than naming an entity ``any`` had already outvoted. So a
+        # closed gate may legitimately carry no blockers.
+        return SunTrackingState(
+            enabled=False,
+            gate_closed=True,
+            blockers=self._sun_tracking_gate.blocking_sensors,
+            template_blocking=self._sun_tracking_gate.blocking_template,
+        )
 
     def seconds_until_sun_tracking_gate_fallback(
         self, options: Mapping[str, Any]
@@ -729,6 +748,22 @@ class PipelineSnapshotBuilder:
                 options.get(CONF_SUMMER_CLOSE_BYPASS_SUN_FLOOR, False)
             ),
             cloudy_position=options.get(CONF_CLOUDY_POSITION),
+            # Gated on the policy, unlike its position sibling above (#175).
+            # The field is venetian-only in the UI, but the key can still be
+            # STORED on a type that never shows it: ``acp.set_light_cloud`` has
+            # no cover-type gate and a venetian → blind switch deliberately
+            # deletes nothing (#1132). Read ungated, a stray value would ride
+            # out on the winning result's tilt every cloudy hold, driving an
+            # axis the cover either lacks or already drives through
+            # ``cloudy_position`` — with no UI field to see or clear it. Gating
+            # the one seam that builds every ClimateOptions closes the service,
+            # type-switch and hand-edited routes at once. Mirrors the
+            # ``weather_override_tilt`` read in ``build`` below.
+            cloudy_tilt=(
+                options.get(CONF_CLOUDY_TILT)
+                if self._policy.cloud_suppression_includes_tilt
+                else None
+            ),
             temp_extreme_heat=options.get(CONF_TEMP_EXTREME_HEAT),
             extreme_heat_position=options.get(CONF_EXTREME_HEAT_POSITION),
             # Absent / None falls back to all-seasons (unchanged behaviour for
@@ -758,6 +793,7 @@ class PipelineSnapshotBuilder:
         clock_window_open: bool = True,
         cover_positions: Mapping[str, int | None] | None = None,
         cloud_suppression_active: bool = False,
+        cloud_escalation_active: bool = False,
         climate_temp_flags: ClimateTempFlags | None = None,
         effective_default: int | None = None,
         is_sunset_active: bool | None = None,
@@ -826,7 +862,7 @@ class PipelineSnapshotBuilder:
                 self._hass, options, cover_data.sun_data, self._time_mgr
             )
 
-        _sun_tracking, _gate_closed = self._resolve_sun_tracking(options)
+        _sun_tracking = self._resolve_sun_tracking(options)
         glare_zones_cfg = self._policy.glare_zones_config(self._config_service, options)
         active_zone_names: set[str] = set()
         if glare_zones_cfg is not None:
@@ -921,8 +957,10 @@ class PipelineSnapshotBuilder:
             custom_position_sensors=self.read_custom_position_sensors(options),
             my_position_value=options.get(CONF_MY_POSITION_VALUE),
             sunset_use_my=bool(options.get(CONF_SUNSET_USE_MY, False)),
-            enable_sun_tracking=_sun_tracking,
-            sun_tracking_gate_closed=_gate_closed,
+            enable_sun_tracking=_sun_tracking.enabled,
+            sun_tracking_gate_closed=_sun_tracking.gate_closed,
+            sun_tracking_gate_blockers=_sun_tracking.blockers,
+            sun_tracking_gate_template_blocking=_sun_tracking.template_blocking,
             motion_timeout_mode=options.get(
                 CONF_MOTION_TIMEOUT_MODE, DEFAULT_MOTION_TIMEOUT_MODE
             ),
@@ -952,6 +990,12 @@ class PipelineSnapshotBuilder:
             max_coverage_steps=int(
                 options.get(CONF_MAX_COVERAGE_STEPS, DEFAULT_MAX_COVERAGE_STEPS)
             ),
+            snap_closed_below=bool(
+                options.get(CONF_SNAP_CLOSED_BELOW, DEFAULT_SNAP_CLOSED_BELOW)
+            ),
+            snap_closed_threshold=int(
+                options.get(CONF_SNAP_CLOSED_THRESHOLD, DEFAULT_SNAP_CLOSED_THRESHOLD)
+            ),
             default_tilt=options.get(CONF_DEFAULT_TILT),
             sunset_tilt=options.get(CONF_SUNSET_TILT),
             min_tilt=int(options.get(CONF_MIN_TILT, DEFAULT_MIN_TILT)),
@@ -965,5 +1009,13 @@ class PipelineSnapshotBuilder:
             solar_floor_active=solar_floor_active,
             time_threshold_minutes=_delta_time_minutes(options.get(CONF_DELTA_TIME)),
             cloud_suppression_active=cloud_suppression_active,
+            cloud_escalation_active=cloud_escalation_active,
+            # "What does fully open mean for me" asked once per cycle, through
+            # the policy method that already answers it for winter heating
+            # (#175). Resolving it here is what keeps the cloud handler — and
+            # every other pipeline consumer — free of a cover-type branch: an
+            # awning's unshaded position is CLOSED, and no handler should have
+            # to know that.
+            unshaded_position=self._policy.position_for_intent(sun_through=True),
             climate_temp_flags=climate_temp_flags,
         )

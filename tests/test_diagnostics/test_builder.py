@@ -1097,9 +1097,20 @@ class TestConfigurationDiagnostics:
             "enabled_toggle",
             "cloud_suppression_enabled",
             "cloudy_position",
+            "cloudy_tilt",
+            # The escalation trio (#175): the stored setting plus the two live
+            # values no options read can reconstruct.
+            "cloud_escalation_delay",
+            "cloud_suppression_phase",
+            "cloud_escalation_deadline",
             "end_of_window_position",
             "is_sunny_source",
             "templated_thresholds",
+            # Issue #1376 secondary finding: neither was in the configuration
+            # block, so a diagnostics attachment could not confirm whether the
+            # auto-off return-to-default seam was armed on a reporter's install.
+            "automatic_control",
+            "return_to_default_toggle",
         }
         # Signed-gamma sub-keys (issue #247's primary storage) per slot — sourced
         # from BLIND_SPOT_SLOTS rather than hardcoded, per the no-magic-values
@@ -1155,6 +1166,22 @@ class TestConfigurationDiagnostics:
         assert config["force_override_active"] is True
         assert config["motion_detected"] is False
         assert config["motion_timeout_active"] is True
+
+    def test_configuration_reports_automatic_control_and_return_to_default_toggle(
+        self, builder: DiagnosticsBuilder
+    ):
+        """Issue #1376: a diagnostics read must show whether the auto-off
+        return-to-default seam is armed (``return_to_default_toggle``) and
+        whether automation is currently on (``automatic_control``) — neither
+        was in the configuration block, so this could not be confirmed from
+        an attachment.
+        """
+        diag, _ = builder.build(
+            _base_ctx(automatic_control=False, return_to_default_toggle=True)
+        )
+        config = diag["configuration"]
+        assert config["automatic_control"] is False
+        assert config["return_to_default_toggle"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1293,6 +1320,62 @@ class TestDecisionTrace:
             "matched": True,
             "reason": "user moved cover",
             "position": 50,
+        }
+
+    def test_trace_carries_the_stable_reason_code(self, builder: DiagnosticsBuilder):
+        """A step with a payload exports ``reason_code``/``reason_params`` (#1359).
+
+        Mirrors the decision-trace sensor attributes, which have carried both
+        since #882. Without them a diagnostics consumer — the offline triage
+        engine, the companion card — can only match the localized English
+        prose, which is a latent localization bug.
+        """
+        from custom_components.adaptive_cover_pro.const import ReasonCode
+        from custom_components.adaptive_cover_pro.reason_i18n import Reason
+
+        steps = [
+            DecisionStep(
+                handler="solar",
+                matched=False,
+                reason_payload=Reason(
+                    ReasonCode.SKIP_SUN_TRACKING_GATE,
+                    {"detail": "", "entities": "binary_sensor.is_ac_on"},
+                ),
+                position=None,
+            ),
+        ]
+        pr = PipelineResult(
+            position=100,
+            control_method=ControlMethod.DEFAULT,
+            reason="default",
+            decision_trace=steps,
+        )
+        diag, _ = builder.build(_base_ctx(pipeline_result=pr))
+        step = diag["decision_trace"][0]
+        assert step["reason_code"] == "skip.sun_tracking_gate"
+        assert step["reason_params"]["entities"] == "binary_sensor.is_ac_on"
+
+    def test_trace_omits_reason_code_for_payloadless_steps(
+        self, builder: DiagnosticsBuilder
+    ):
+        """Additive only — a legacy step keeps its exact pre-#1359 shape."""
+        steps = [
+            DecisionStep(
+                handler="legacy", matched=False, reason="plain string", position=None
+            ),
+        ]
+        pr = PipelineResult(
+            position=0,
+            control_method=ControlMethod.DEFAULT,
+            reason="x",
+            decision_trace=steps,
+        )
+        diag, _ = builder.build(_base_ctx(pipeline_result=pr))
+        assert diag["decision_trace"][0] == {
+            "handler": "legacy",
+            "matched": False,
+            "reason": "plain string",
+            "position": None,
         }
 
     def test_trace_preserves_order(self, builder: DiagnosticsBuilder):
@@ -1525,6 +1608,28 @@ class TestCloudyPositionDiagnostics:
         """configuration.cloudy_position is None when option is not configured."""
         diag, _ = builder.build(_base_ctx(config_options={}))
         assert diag["configuration"]["cloudy_position"] is None
+
+    def test_configuration_includes_cloudy_tilt_when_set(
+        self, builder: DiagnosticsBuilder
+    ):
+        """configuration.cloudy_tilt surfaces the configured slat angle (#175).
+
+        The reporter's own evidence for this issue reached us as a diagnostics
+        dump, so the new target has to be visible there or the next report of
+        "my slats do not move under clouds" is undiagnosable.
+        """
+        from custom_components.adaptive_cover_pro.const import CONF_CLOUDY_TILT
+
+        options = {CONF_CLOUD_SUPPRESSION: True, CONF_CLOUDY_TILT: 100}
+        diag, _ = builder.build(_base_ctx(config_options=options))
+        assert diag["configuration"]["cloudy_tilt"] == 100
+
+    def test_configuration_cloudy_tilt_none_when_absent(
+        self, builder: DiagnosticsBuilder
+    ):
+        """configuration.cloudy_tilt is None when the option is not configured."""
+        diag, _ = builder.build(_base_ctx(config_options={}))
+        assert diag["configuration"]["cloudy_tilt"] is None
 
     def test_configuration_includes_cloud_suppression_enabled(
         self, builder: DiagnosticsBuilder

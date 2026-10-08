@@ -20,6 +20,7 @@ from custom_components.adaptive_cover_pro.pipeline.types import DecisionStep
 from custom_components.adaptive_cover_pro.diagnostics.event_buffer import EventBuffer
 from custom_components.adaptive_cover_pro.managers.manual_override import (
     AdaptiveCoverManager,
+    StateChangeInputs,
 )
 from custom_components.adaptive_cover_pro.pipeline.types import PipelineResult
 from custom_components.adaptive_cover_pro.const import ControlMethod
@@ -149,12 +150,14 @@ class TestRingBufferEvents:
         mgr, event_buffer = _make_manager()
         event = _make_state_event("cover.test", new_pos=80, old_pos=50)
         mgr.handle_state_change(
-            states_data=event,
-            our_state=50,
-            policy=get_policy("cover_blind"),
-            allow_reset=True,
-            is_waiting=lambda _eid: False,
-            manual_threshold=3,
+            event,
+            StateChangeInputs(
+                our_state=50,
+                policy=get_policy("cover_blind"),
+                allow_reset=True,
+                is_waiting=lambda _eid: False,
+                manual_threshold=3,
+            ),
         )
         buf = event_buffer.snapshot()
         set_events = [e for e in buf if e["event"] == "manual_override_set"]
@@ -169,12 +172,14 @@ class TestRingBufferEvents:
         mgr, event_buffer = _make_manager()
         event = _make_state_event("cover.test", new_pos=51, old_pos=50)
         mgr.handle_state_change(
-            states_data=event,
-            our_state=50,
-            policy=get_policy("cover_blind"),
-            allow_reset=True,
-            is_waiting=lambda _eid: False,
-            manual_threshold=5,
+            event,
+            StateChangeInputs(
+                our_state=50,
+                policy=get_policy("cover_blind"),
+                allow_reset=True,
+                is_waiting=lambda _eid: False,
+                manual_threshold=5,
+            ),
         )
         buf = event_buffer.snapshot()
         rejected = [
@@ -187,18 +192,49 @@ class TestRingBufferEvents:
         mgr, event_buffer = _make_manager()
         event = _make_state_event("cover.test", new_pos=80)
         mgr.handle_state_change(
-            states_data=event,
-            our_state=50,
-            policy=get_policy("cover_blind"),
-            allow_reset=True,
-            is_waiting=lambda _eid: True,
-            manual_threshold=3,
+            event,
+            StateChangeInputs(
+                our_state=50,
+                policy=get_policy("cover_blind"),
+                allow_reset=True,
+                is_waiting=lambda _eid: True,
+                manual_threshold=3,
+            ),
         )
         buf = event_buffer.snapshot()
         rejected = [
             e for e in buf if e["event"] == "manual_override_rejected_wait_for_target"
         ]
         assert len(rejected) == 1
+
+    def test_wait_for_target_rejection_records_resolved_position(self):
+        """Issue #1358 observation 1: a gated rejection records the resolved position.
+
+        ``_reject_gated_update`` hardcoded ``new_position=None`` for every
+        gated rejection (wait_for_target and command-grace), leaving every
+        buffered rejection event with a null position — exactly what sent a
+        reporter down the wrong causal path while triaging a diagnostics
+        dump. The gate must resolve the position through the same
+        ``policy.read_axis_value`` seam the post-gate path already uses.
+        """
+        mgr, event_buffer = _make_manager()
+        event = _make_state_event("cover.test", new_pos=80, old_pos=50)
+        mgr.handle_state_change(
+            event,
+            StateChangeInputs(
+                our_state=50,
+                policy=get_policy("cover_blind"),
+                allow_reset=True,
+                is_waiting=lambda _eid: True,
+                manual_threshold=3,
+            ),
+        )
+        buf = event_buffer.snapshot()
+        rejected = [
+            e for e in buf if e["event"] == "manual_override_rejected_wait_for_target"
+        ]
+        assert len(rejected) == 1
+        assert rejected[0]["new_position"] == 80
 
     def test_position_unavailable_records_rejection(self):
         """None position records 'manual_override_rejected_position_unavailable'."""
@@ -212,12 +248,14 @@ class TestRingBufferEvents:
             return_value=None,
         ):
             mgr.handle_state_change(
-                states_data=event,
-                our_state=50,
-                policy=get_policy("cover_blind"),
-                allow_reset=True,
-                is_waiting=lambda _eid: False,
-                manual_threshold=3,
+                event,
+                StateChangeInputs(
+                    our_state=50,
+                    policy=get_policy("cover_blind"),
+                    allow_reset=True,
+                    is_waiting=lambda _eid: False,
+                    manual_threshold=3,
+                ),
             )
         buf = event_buffer.snapshot()
         rejected = [
@@ -230,7 +268,7 @@ class TestRingBufferEvents:
     def test_reset_records_reset_event(self):
         """reset() records a 'manual_override_reset' event in the buffer."""
         mgr, event_buffer = _make_manager()
-        mgr.manual_control["cover.test"] = True
+        mgr.mark_user_command("cover.test", reason="test setup")
         mgr.reset("cover.test")
         buf = event_buffer.snapshot()
         reset_events = [e for e in buf if e["event"] == "manual_override_reset"]
@@ -242,12 +280,14 @@ class TestRingBufferEvents:
         mgr, event_buffer = _make_manager()
         event = _make_state_event("cover.test", new_pos=80)
         mgr.handle_state_change(
-            states_data=event,
-            our_state=50,
-            policy=get_policy("cover_blind"),
-            allow_reset=True,
-            is_waiting=lambda _eid: False,
-            manual_threshold=3,
+            event,
+            StateChangeInputs(
+                our_state=50,
+                policy=get_policy("cover_blind"),
+                allow_reset=True,
+                is_waiting=lambda _eid: False,
+                manual_threshold=3,
+            ),
         )
         required_keys = {
             "ts",
@@ -265,12 +305,14 @@ class TestRingBufferEvents:
         mgr, event_buffer = _make_manager()
         event = _make_state_event("cover.test", new_pos=80)
         mgr.handle_state_change(
-            states_data=event,
-            our_state=50,
-            policy=get_policy("cover_blind"),
-            allow_reset=True,
-            is_waiting=lambda _eid: False,
-            manual_threshold=3,
+            event,
+            StateChangeInputs(
+                our_state=50,
+                policy=get_policy("cover_blind"),
+                allow_reset=True,
+                is_waiting=lambda _eid: False,
+                manual_threshold=3,
+            ),
         )
         ev = event_buffer.snapshot()[0]
         dt.datetime.fromisoformat(ev["ts"])
@@ -669,18 +711,6 @@ class TestTrackActionEnrichment:
         assert parsed.utcoffset() is not None, "timestamp must be timezone-aware (UTC)"
         assert parsed.utcoffset().total_seconds() == 0
 
-    def test_target_source_recorded(self):
-        """target_source kwarg is stored in last_cover_action."""
-        svc, _buf = self._make_svc_with_buffer()
-        svc._track_action(
-            "cover.test",
-            "set_cover_position",
-            50,
-            True,
-            target_source="pipeline",
-        )
-        assert svc.last_cover_action["target_source"] == "pipeline"
-
     def test_force_and_is_safety_recorded(self):
         """Force and is_safety flags are stored in last_cover_action."""
         svc, _buf = self._make_svc_with_buffer()
@@ -744,7 +774,6 @@ class TestTrackActionEnrichment:
             75,
             True,
             trigger="solar",
-            target_source="pipeline",
             force=False,
             is_safety=False,
         )
@@ -755,7 +784,6 @@ class TestTrackActionEnrichment:
         assert ev["entity_id"] == "cover.test"
         assert ev["service"] == "set_cover_position"
         assert ev["trigger"] == "solar"
-        assert ev["target_source"] == "pipeline"
 
     def test_no_event_buffer_no_error(self):
         """_track_action works normally when no event_buffer is injected."""

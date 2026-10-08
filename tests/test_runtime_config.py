@@ -180,6 +180,49 @@ def test_runtime_config_reads_enforce_delta_at_endpoints() -> None:
     assert rc.tracking.enforce_delta_at_endpoints is True
 
 
+def test_snap_closed_below_defaults_off() -> None:
+    """Empty options → the declutter snap is off, threshold at its default (#1379)."""
+    from custom_components.adaptive_cover_pro.const import DEFAULT_SNAP_CLOSED_THRESHOLD
+
+    rc = RuntimeConfig.from_options({})
+    assert rc.tracking.snap_closed_below is False
+    assert rc.tracking.snap_closed_threshold == DEFAULT_SNAP_CLOSED_THRESHOLD
+
+
+def test_runtime_config_reads_snap_closed_below_and_threshold() -> None:
+    """The snap toggle and threshold flow through to the tracking slice (#1379)."""
+    from custom_components.adaptive_cover_pro.const import (
+        CONF_SNAP_CLOSED_BELOW,
+        CONF_SNAP_CLOSED_THRESHOLD,
+    )
+
+    rc = RuntimeConfig.from_options(
+        {CONF_SNAP_CLOSED_BELOW: True, CONF_SNAP_CLOSED_THRESHOLD: 15}
+    )
+    assert rc.tracking.snap_closed_below is True
+    assert rc.tracking.snap_closed_threshold == 15
+
+
+def test_default_override_duration_is_not_shared_between_entries() -> None:
+    """#1274: two entries on the default hold must not alias one dict object.
+
+    ``DEFAULT_MANUAL_OVERRIDE_DURATION`` is a module-level mutable, and the
+    slice value reaches ``coordinator.manual_duration`` and
+    ``DetectorConfig.duration``. Handing out the constant itself would let one
+    entry's in-place edit silently retune every other entry's override window.
+    """
+    from custom_components.adaptive_cover_pro.const import (
+        DEFAULT_MANUAL_OVERRIDE_DURATION,
+    )
+
+    first = RuntimeConfig.from_options({}).manual_override.duration
+    second = RuntimeConfig.from_options({}).manual_override.duration
+
+    assert first == second == DEFAULT_MANUAL_OVERRIDE_DURATION
+    assert first is not second
+    assert first is not DEFAULT_MANUAL_OVERRIDE_DURATION
+
+
 def test_manual_override_input_entities_defaults_empty() -> None:
     """Empty options → no input-sensor override entities configured (issue #688)."""
     rc = RuntimeConfig.from_options({})
@@ -500,3 +543,74 @@ def test_outside_temp_source_reads_set_value() -> None:
         {CONF_OUTSIDE_TEMP_SOURCE: "max_of_live_and_forecast"}
     )
     assert rc.outside_temp_source == "max_of_live_and_forecast"
+
+
+# ---------------------------------------------------------------------------
+# Cloud-escalation delay (issue #175)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_cloud_escalation_delay_absent_is_none() -> None:
+    """No key → no escalation, which is every install before #175."""
+    rc = RuntimeConfig.from_options({})
+    assert rc.cloud_suppression.escalation_delay_seconds is None
+
+
+@pytest.mark.unit
+def test_cloud_escalation_delay_converts_the_duration_dict() -> None:
+    """A ``DurationSelector`` stores components; the manager wants seconds."""
+    from custom_components.adaptive_cover_pro.const import CONF_CLOUD_ESCALATION_DELAY
+
+    rc = RuntimeConfig.from_options(
+        {CONF_CLOUD_ESCALATION_DELAY: {"hours": 2, "minutes": 0, "seconds": 0}}
+    )
+    assert rc.cloud_suppression.escalation_delay_seconds == 7200
+
+
+@pytest.mark.unit
+def test_cloud_escalation_delay_sums_every_component() -> None:
+    """Hours, minutes and seconds all count — not just the largest one."""
+    from custom_components.adaptive_cover_pro.const import CONF_CLOUD_ESCALATION_DELAY
+
+    rc = RuntimeConfig.from_options(
+        {CONF_CLOUD_ESCALATION_DELAY: {"hours": 1, "minutes": 30, "seconds": 15}}
+    )
+    assert rc.cloud_suppression.escalation_delay_seconds == 5415
+
+
+@pytest.mark.unit
+def test_cloud_escalation_delay_all_zero_is_none() -> None:
+    """The ``DurationSelector`` footgun: a blank field stores all-zero, not nothing.
+
+    HA's duration control submits ``{"hours": 0, "minutes": 0, "seconds": 0}``
+    for an untouched field, so "absent" and "explicitly nothing" arrive as two
+    different values meaning the same thing. Read literally, zero seconds would
+    mean *escalate the instant a cloud arrives* — the loudest possible
+    misreading of a blank field, and it would fire for everyone who so much as
+    opened the Light & Cloud step.
+    """
+    from custom_components.adaptive_cover_pro.const import CONF_CLOUD_ESCALATION_DELAY
+
+    rc = RuntimeConfig.from_options(
+        {CONF_CLOUD_ESCALATION_DELAY: {"hours": 0, "minutes": 0, "seconds": 0}}
+    )
+    assert rc.cloud_suppression.escalation_delay_seconds is None
+
+
+@pytest.mark.unit
+def test_cloud_escalation_delay_empty_dict_is_none() -> None:
+    """An empty dict is the same blank field with the components omitted."""
+    from custom_components.adaptive_cover_pro.const import CONF_CLOUD_ESCALATION_DELAY
+
+    rc = RuntimeConfig.from_options({CONF_CLOUD_ESCALATION_DELAY: {}})
+    assert rc.cloud_suppression.escalation_delay_seconds is None
+
+
+@pytest.mark.unit
+def test_cloud_escalation_delay_explicit_null_is_none() -> None:
+    """``acp.set_light_cloud`` clears the option by writing null."""
+    from custom_components.adaptive_cover_pro.const import CONF_CLOUD_ESCALATION_DELAY
+
+    rc = RuntimeConfig.from_options({CONF_CLOUD_ESCALATION_DELAY: None})
+    assert rc.cloud_suppression.escalation_delay_seconds is None

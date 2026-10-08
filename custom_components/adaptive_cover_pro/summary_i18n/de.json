@@ -83,8 +83,15 @@
   "warnings": {
     "custom_position_bound_conflict": "⚠️ {label}: Das Maximum ({max}%) liegt unter dem Minimum ({min}%) — das Minimum gewinnt und das Maximum wird ignoriert.",
     "custom_tilt_only_conflict": "⚠️ {label}: Nur Neigung ist aktiviert — Als Minimum verwenden / Meine Position verwenden werden für diesen Slot ignoriert.",
+    "custom_tilt_only_bounds_discarded": "⚠️ {label}: Lamelle auf {slat}% fixiert — die konfigurierten Neigungsgrenzen werden für diesen Slot ignoriert.",
+    "custom_tilt_only_no_effect": "⚠️ {label}: Nur Neigung ist aktiviert, ohne Lamellenwinkel und ohne Neigungsgrenzen — dieser Slot hat keine Auswirkung.",
+    "custom_outside_window_no_bounds": "⚠️ {label}: Grenzen außerhalb des Zeitfensters aktiv halten ist aktiviert, aber dieser Slot konfiguriert kein Minimum und kein Maximum — die Einstellung hat keine Auswirkung. Nur Min-/Max-Ansprüche bleiben dort aktiv; eine exakte Position nie.",
+    "custom_outside_window_redundant": "⚠️ {label}: Grenzen außerhalb des Zeitfensters aktiv halten ist aktiviert, aber Priorität 100 wirkt bereits außerhalb des Zeitfensters (und an der automatischen Steuerung sowie den Delta-Gattern vorbei) — die Einstellung ändert hier nichts.",
+    "custom_scope_to_window_no_fixed_claim": "⚠️ {label}: Nur innerhalb des Zeitfensters anwenden ist aktiviert, aber dieser Slot benennt keine exakte Position und verwendet nicht Meine Position — die Einstellung hat keine Auswirkung. Sie begrenzt nur den Anspruch auf die exakte Position; ob eine Min-/Max-Grenze das Zeitfenster übersteht, entscheidet stattdessen Grenzen außerhalb des Zeitfensters aktiv halten.",
+    "custom_scope_to_window_safety_ignored": "⚠️ {label}: Nur innerhalb des Zeitfensters anwenden ist aktiviert, aber Priorität 100 ist Sicherheit — außerhalb des Zeitfensters zu wirken ist das, was diese Priorität bedeutet, daher wird die Einstellung hier ignoriert.",
+    "custom_scope_to_window_needs_return": "⚠️ {label}: „Beschattungen zur aktuellen Standardposition verschieben, wenn die Endzeit erreicht wird“ ist deaktiviert — der Slot tritt zur Endzeit zurück, aber nichts positioniert die Beschattung um, sodass sie dort bleibt, wo der Slot sie gelassen hat. Aktivieren Sie diesen Schalter.",
     "motion_hold_no_sensors": "⚠️ Der Modus Position halten ist eingestellt, aber es sind keine Belegungsquellen konfiguriert – die Einstellung hat keine Auswirkungen, bis eine Belegungsquelle hinzugefügt wird",
-    "cloudy_pos_ignored": "⚠️ Bewölkte Position ({pos}%) konfiguriert, aber Wolkenunterdrückung ist deaktiviert — Wert wird ignoriert.",
+    "cloud_settings_ignored": "⚠️ Wolkenunterdrückung ist deaktiviert, daher werden {items} ignoriert.",
     "sun_track_min_below_floor": "⚠️ Sonnenverfolgung Min {sun_min}% < Min Position {min_pos}% — Immer-aktiver Boden dominiert; Sonnenverfolgungsboden wird auf {min_pos}% erhöht.",
     "mode2_min_position": "⚠️ Neigung MODE2 + Min Position {min_pos}% — im MODE2 ist der offene (horizontale) Lamellenwinkel 50%, also jede Min Position ≥ 50 kollabiert jede Klimamodus/Blendungszone-Entscheidung zum Boden und die Beschattung stoppt, Wärme zu blockieren.",
     "somfy_my_unset": "⚠️ Somfy My-Preset ist für ein oder mehrere Ziele aktiviert, aber My Preset Value ist nicht gesetzt — fällt auf konfiguriertes % zurück.",
@@ -93,15 +100,11 @@
     "group_empty": "⚠️ Diese Gruppe hat keine Mitglieder – sie wird nichts steuern.",
     "forecast_source_no_weather_entity": "⚠️ Außentemperaturquelle basiert auf Vorhersage, aber es ist keine Wetter-Entität konfiguriert — die Vorhersage wird stillschweigend auf den Live-Messwert zurückfallen. Konfigurieren Sie eine Wetter-Entität unter Wetter, Licht & Wolken.",
     "travel_time_unmeasurable": "⚠️ {entities} melden einen angenommenen Zustand, daher kann ihre Laufzeit nicht gemessen werden und keine wurde eingegeben — Dashboards zeigen keine Bewegung. Geben Sie eine Zeit unter Kalibrierung → Laufzeit ein.",
-    "custom_tilt_only_bounds_discarded": "⚠️ {label}: Lamelle auf {slat}% fixiert — die konfigurierten Neigungsgrenzen werden für diesen Slot ignoriert.",
-    "custom_tilt_only_no_effect": "⚠️ {label}: Nur Neigung ist aktiviert, ohne Lamellenwinkel und ohne Neigungsgrenzen — dieser Slot hat keine Auswirkung.",
-    "custom_outside_window_no_bounds": "⚠️ {label}: Grenzen außerhalb des Zeitfensters aktiv halten ist aktiviert, aber dieser Slot konfiguriert kein Minimum und kein Maximum — die Einstellung hat keine Auswirkung. Nur Min-/Max-Ansprüche bleiben dort aktiv; eine exakte Position nie.",
-    "custom_outside_window_redundant": "⚠️ {label}: Grenzen außerhalb des Zeitfensters aktiv halten ist aktiviert, aber Priorität 100 wirkt bereits außerhalb des Zeitfensters (und an der automatischen Steuerung sowie den Delta-Gattern vorbei) — die Einstellung ändert hier nichts.",
-    "custom_scope_to_window_no_fixed_claim": "⚠️ {label}: Nur innerhalb des Zeitfensters anwenden ist aktiviert, aber dieser Slot benennt keine exakte Position und verwendet nicht Meine Position — die Einstellung hat keine Auswirkung. Sie begrenzt nur den Anspruch auf die exakte Position; ob eine Min-/Max-Grenze das Zeitfenster übersteht, entscheidet stattdessen Grenzen außerhalb des Zeitfensters aktiv halten.",
-    "custom_scope_to_window_safety_ignored": "⚠️ {label}: Nur innerhalb des Zeitfensters anwenden ist aktiviert, aber Priorität 100 ist Sicherheit — außerhalb des Zeitfensters zu wirken ist das, was diese Priorität bedeutet, daher wird die Einstellung hier ignoriert.",
-    "custom_scope_to_window_needs_return": "⚠️ {label}: „Beschattungen zur aktuellen Standardposition verschieben, wenn die Endzeit erreicht wird“ ist deaktiviert — der Slot tritt zur Endzeit zurück, aber nichts positioniert die Beschattung um, sodass sie dort bleibt, wo der Slot sie gelassen hat. Aktivieren Sie diesen Schalter.",
     "weather_window_scoped": "⚠️ Die Wettersicherung wirkt nur innerhalb des Zeitfensters — außerhalb folgt die Beschattung stattdessen der Fensterende-/Sonnenuntergangs-Position, und das Wetter schützt sie nachts nicht.",
-    "weather_tilt_min_mode": "⚠️ Eine Wetter-Übersteuerungsneigung ist gesetzt, aber der Minimale-Positionsmodus ist aktiv — das Wetter setzt in diesem Modus nur eine Mindestposition und stellt die Lamellen nie ein, daher wird die Neigung ignoriert."
+    "weather_tilt_min_mode": "⚠️ Eine Wetter-Übersteuerungsneigung ist gesetzt, aber der Minimale-Positionsmodus ist aktiv — das Wetter setzt in diesem Modus nur eine Mindestposition und stellt die Lamellen nie ein, daher wird die Neigung ignoriert.",
+    "snap_closed_below_conflicts_min_pos": "⚠️ Unter Schwelle schließen {threshold}% + Mindestposition {min_pos}% — die ständig aktive Untergrenze deckt bereits das gesamte Schließband ab und wird Vorrang haben, daher kann diese Einstellung nie wirksam werden. Senken Sie die Mindestposition unter {floor_bound}% oder erhöhen Sie die Schwelle über {threshold_bound}%, damit sie funktioniert.",
+    "snap_closed_below_conflicts_max_pos": "⚠️ Unter Schwelle schließen {threshold}% + Maximalposition {max_pos}% — die ständig aktive Obergrenze deckt bereits das gesamte Schließband ab und wird Vorrang haben, daher kann diese Einstellung nie wirksam werden. Erhöhen Sie die Maximalposition über {ceiling_bound}% oder erhöhen Sie die Schwelle über {threshold_bound}%, damit sie funktioniert.",
+    "snap_closed_below_floor_active": "⚠️ Unter Schwelle schließen {threshold}% + gemischte Beschattungsgruppe (einige unterstützen set_position, einige sind nur Öffnen/Schließen) — die Untergrenze der Sonnenverfolgung bleibt für die ganze Gruppe aktiv (issue #569), daher landen die positionierbaren Beschattung(en) beim Schließen bei {floor_pct}% statt 0%."
   },
   "motion": {
     "action_hold": "Behänge halten aktuelle Position (zurück zum Standard, wenn Sonne den Sonnen-Akzeptanzwinkel verlässt)",
@@ -125,7 +128,10 @@
     "release": " · Freigabe wenn {parts}",
     "lux_release": "Lux ≥ {release} lx",
     "irradiance_release": "Bestrahlungsstärke ≥ {release} W/m²",
-    "coverage_release": "Bewölkung ≤ {release}%"
+    "coverage_release": "Bewölkung ≤ {release}%",
+    "ignored_tilt": "bewölkter Lamellenwinkel {tilt}%",
+    "escalation": " · öffnet sich vollständig nach {delay}",
+    "ignored_escalation": "Vollöffnungs-Verzögerung {delay}"
   },
   "info": {
     "light_sensors_off": "📊 Lichtsensoren konfiguriert ({names}), aber Wolkenunterdrückung ist aus.",
@@ -173,7 +179,8 @@
     "gate_sensors": "{indent}🚦 Sonnenverfolgungs-Gate: {sensors} entscheiden, ob der Sonne gefolgt wird.",
     "gate_template": "{indent}🚦 Sonnenverfolgungs-Gate: eine Vorlage entscheidet, ob der Sonne gefolgt wird.",
     "gate_both": "{indent}🚦 Sonnenverfolgungs-Gate: {sensors} und eine Vorlage ({mode}) entscheiden, ob der Sonne gefolgt wird.",
-    "gate_explainer": "{indent}Solange das Gate falsch meldet, wird die Sonnenpositionierung übersprungen und die Abdeckung fällt auf die Standardposition zurück. Klimamodus, Bewegung und manuelle Übersteuerung bleiben unberührt, und das Betriebsfenster bleibt offen — anders als beim Tageslicht-Gate, das das Fenster schließt und alle davon unterdrückt. Blendungszonen laufen weiter, verlieren aber ihre nur-bei-Sonnenverfolgung-Grenzwerte, da diese nur bei aktiver Verfolgung gelten."
+    "gate_explainer": "{indent}Solange das Gate falsch meldet, wird die Sonnenpositionierung übersprungen und die Abdeckung fällt auf die Standardposition zurück. Klimamodus, Bewegung und manuelle Übersteuerung bleiben unberührt, und das Betriebsfenster bleibt offen — anders als beim Tageslicht-Gate, das das Fenster schließt und alle davon unterdrückt. Blendungszonen laufen weiter, verlieren aber ihre nur-bei-Sonnenverfolgung-Grenzwerte, da diese nur bei aktiver Verfolgung gelten.",
+    "snap_closed_below": "{indent}📎 Unter Schwelle schließen {threshold}% — eine Sonnenverfolgungsanforderung unter {threshold}% (aber über 0%) wird sofort ganz geschlossen, anstatt einen kaum sichtbaren Spalt offen zu lassen."
   },
   "timing": {
     "from_entity": "von {entity}",
@@ -274,7 +281,8 @@
       "mode": "Modus: {v}",
       "angle_0": "0%-Winkel {v}°",
       "angle_100": "100%-Winkel {v}°",
-      "horizontal_percent": "horizontal bei {v}%"
+      "horizontal_percent": "horizontal bei {v}%",
+      "min_reflected_elevation": "reflektierte Sonne mind. {v}° oben"
     },
     "oscillating": {
       "arm": "{v}m Arm",
